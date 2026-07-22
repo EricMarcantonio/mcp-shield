@@ -1,0 +1,51 @@
+{{define "pending.html"}}
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>mcp-shield — Pending Approvals</title>
+  <link rel="stylesheet" href="/static/dashboard.css">
+</head>
+<body>
+  <nav>
+    <a href="/" class="active">Pending</a>
+    <a href="/servers">Servers</a>
+  </nav>
+  <h1>Pending Manifest Approvals</h1>
+  {{if not .Pending}}
+    <p class="empty">No pending manifests. All known servers are on an approved version.</p>
+  {{else}}
+  <table>
+    <thead>
+      <tr><th>Server</th><th>Risk</th><th>Hash</th><th>Changes</th><th>Seen</th><th></th></tr>
+    </thead>
+    <tbody>
+      {{range .Pending}}
+      <tr class="risk-{{.Risk}}">
+        <td>{{.Server}}</td>
+        <td><span class="badge risk-{{.Risk}}">{{.Risk}}</span></td>
+        <td class="hash"><a href="/manifests/{{.ID}}">{{printf "%.12s" .Hash}}</a></td>
+        <td>
+          <ul class="changes">
+            {{range .Changes}}<li>{{.}}</li>{{end}}
+          </ul>
+        </td>
+        <td>{{.CreatedAt.Format "2006-01-02 15:04:05"}}</td>
+        <td>
+          <form method="post" action="/manifests/{{.ID}}/approve" class="inline">
+            <input type="hidden" name="username" value="dashboard">
+            <button type="submit" class="approve">Approve</button>
+          </form>
+          <form method="post" action="/manifests/{{.ID}}/reject" class="inline">
+            <input type="hidden" name="username" value="dashboard">
+            <button type="submit" class="reject">Reject</button>
+          </form>
+        </td>
+      </tr>
+      {{end}}
+    </tbody>
+  </table>
+  {{end}}
+</body>
+</html>
+{{end}}

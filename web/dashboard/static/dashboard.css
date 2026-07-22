@@ -1,0 +1,71 @@
+* { box-sizing: border-box; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  margin: 0;
+  padding: 2rem;
+  background: #0f1115;
+  color: #e6e8eb;
+}
+nav {
+  margin-bottom: 1.5rem;
+}
+nav a {
+  color: #9aa4b2;
+  text-decoration: none;
+  margin-right: 1.5rem;
+  font-weight: 600;
+}
+nav a.active, nav a:hover {
+  color: #e6e8eb;
+}
+h1 { font-size: 1.4rem; }
+h2 { font-size: 1.1rem; margin-top: 2rem; }
+h3 { font-size: 0.85rem; color: #9aa4b2; text-transform: uppercase; letter-spacing: 0.05em; }
+table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 1rem;
+}
+th, td {
+  text-align: left;
+  padding: 0.6rem 0.8rem;
+  border-bottom: 1px solid #23262e;
+  vertical-align: top;
+}
+th { color: #9aa4b2; font-weight: 600; font-size: 0.8rem; text-transform: uppercase; }
+.hash { font-family: ui-monospace, SFMono-Regular, monospace; }
+.empty { color: #9aa4b2; }
+.badge {
+  display: inline-block;
+  padding: 0.15rem 0.5rem;
+  border-radius: 0.3rem;
+  font-size: 0.75rem;
+  font-weight: 700;
+}
+.badge.risk-HIGH, .risk-HIGH .badge { background: #451a1a; color: #ff8080; }
+.badge.risk-MEDIUM { background: #4a3a12; color: #ffcc66; }
+.badge.risk-LOW { background: #123a1f; color: #7be0a0; }
+.badge.state-APPROVED { background: #123a1f; color: #7be0a0; }
+.badge.state-PENDING { background: #4a3a12; color: #ffcc66; }
+.badge.state-REJECTED, .badge.state-SUPERSEDED { background: #451a1a; color: #ff8080; }
+.changes { margin: 0; padding-left: 1.1rem; }
+form.inline { display: inline-block; margin-right: 0.4rem; }
+button {
+  border: none;
+  border-radius: 0.3rem;
+  padding: 0.4rem 0.9rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+button.approve { background: #1f6f43; color: white; }
+button.reject { background: #7a2323; color: white; }
+.diff-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 1rem;
+}
+.diff-grid ul { margin: 0.3rem 0 0; padding-left: 1.1rem; }
+.diff-grid li.none { color: #565d68; font-style: italic; }
+dl.meta { display: grid; grid-template-columns: max-content 1fr; gap: 0.3rem 1rem; }
+dl.meta dt { color: #9aa4b2; }
+.actions { margin: 1rem 0; }

@@ -1,0 +1,21 @@
+services:
+  gateway:
+    build: .
+    ports:
+      - "8080:8080"
+      - "8081:8081"
+    volumes:
+      - ./data:/data
+      - ./config:/config:ro
+    environment:
+      DATABASE_PATH: /data/mcp.db
+      FAIL_MODE: block
+      CONFIG_PATH: /config/servers.json
+      PROXY_ADDR: ":8080"
+      API_ADDR: ":8081"
+    healthcheck:
+      test: ["CMD", "/app/bin/mcp-shield", "servers"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s

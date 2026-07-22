@@ -1,0 +1,33 @@
+{{define "servers.html"}}
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>mcp-shield — Servers</title>
+  <link rel="stylesheet" href="/static/dashboard.css">
+</head>
+<body>
+  <nav>
+    <a href="/">Pending</a>
+    <a href="/servers" class="active">Servers</a>
+  </nav>
+  <h1>Registered MCP Servers</h1>
+  {{if not .Servers}}
+    <p class="empty">No servers have connected yet.</p>
+  {{else}}
+  <table>
+    <thead><tr><th>Name</th><th>Approved Version</th><th>Registered</th></tr></thead>
+    <tbody>
+      {{range .Servers}}
+      <tr>
+        <td>{{.Server.Name}}</td>
+        <td class="hash">{{printf "%.12s" .ApprovedHash}}</td>
+        <td>{{.Server.CreatedAt.Format "2006-01-02 15:04:05"}}</td>
+      </tr>
+      {{end}}
+    </tbody>
+  </table>
+  {{end}}
+</body>
+</html>
+{{end}}

@@ -1,0 +1,128 @@
+package mcp
+
+import (
+	"bufio"
+	"context"
+	"fmt"
+	"io"
+	"os/exec"
+	"sync"
+)
+
+// Transport is a duplex byte-frame channel to a single MCP peer.
+// Frames are newline-delimited JSON-RPC messages (the stdio MCP convention).
+type Transport interface {
+	Start(ctx context.Context) error
+	Send(msg []byte) error
+	// Recv returns channels streaming decoded frames and terminal errors.
+	// Both channels are closed when the transport shuts down.
+	Recv() (<-chan []byte, <-chan error)
+	Close() error
+}
+
+// StdioTransport spawns a child process and speaks newline-delimited
+// JSON-RPC over its stdin/stdout.
+type StdioTransport struct {
+	cmdPath string
+	args    []string
+	env     []string
+
+	mu     sync.Mutex
+	cmd    *exec.Cmd
+	stdin  io.WriteCloser
+	frames chan []byte
+	errs   chan error
+}
+
+func NewStdioTransport(cmdPath string, args, env []string) *StdioTransport {
+	return &StdioTransport{
+		cmdPath: cmdPath,
+		args:    args,
+		env:     env,
+	}
+}
+
+func (t *StdioTransport) Start(ctx context.Context) error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	cmd := exec.CommandContext(ctx, t.cmdPath, t.args...)
+	if len(t.env) > 0 {
+		cmd.Env = append(cmd.Environ(), t.env...)
+	}
+
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		return fmt.Errorf("stdio transport: stdin pipe: %w", err)
+	}
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return fmt.Errorf("stdio transport: stdout pipe: %w", err)
+	}
+	cmd.Stderr = nil
+
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("stdio transport: start %s: %w", t.cmdPath, err)
+	}
+
+	t.cmd = cmd
+	t.stdin = stdin
+	t.frames = make(chan []byte, 16)
+	t.errs = make(chan error, 1)
+
+	go t.readLoop(stdout)
+
+	return nil
+}
+
+func (t *StdioTransport) readLoop(stdout io.ReadCloser) {
+	defer close(t.frames)
+	defer close(t.errs)
+
+	scanner := bufio.NewScanner(stdout)
+	scanner.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
+	for scanner.Scan() {
+		line := scanner.Bytes()
+		if len(line) == 0 {
+			continue
+		}
+		frame := make([]byte, len(line))
+		copy(frame, line)
+		t.frames <- frame
+	}
+	if err := scanner.Err(); err != nil {
+		t.errs <- fmt.Errorf("stdio transport: read: %w", err)
+		return
+	}
+	t.errs <- io.EOF
+}
+
+func (t *StdioTransport) Send(msg []byte) error {
+	t.mu.Lock()
+	stdin := t.stdin
+	t.mu.Unlock()
+	if stdin == nil {
+		return fmt.Errorf("stdio transport: not started")
+	}
+	if _, err := stdin.Write(append(msg, '\n')); err != nil {
+		return fmt.Errorf("stdio transport: write: %w", err)
+	}
+	return nil
+}
+
+func (t *StdioTransport) Recv() (<-chan []byte, <-chan error) {
+	return t.frames, t.errs
+}
+
+func (t *StdioTransport) Close() error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.stdin != nil {
+		_ = t.stdin.Close()
+	}
+	if t.cmd != nil && t.cmd.Process != nil {
+		_ = t.cmd.Process.Kill()
+		_ = t.cmd.Wait()
+	}
+	return nil
+}

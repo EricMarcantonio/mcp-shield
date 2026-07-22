@@ -1,0 +1,8 @@
+[
+  {
+    "name": "calendar",
+    "command": "/app/bin/mcp-shield-testserver",
+    "args": ["-version", "v1"],
+    "env": []
+  }
+]

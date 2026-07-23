@@ -1,0 +1,20 @@
+[
+  {
+    "name": "calendar_read",
+    "description": "Read events from the calendar",
+    "inputSchema": {
+      "type": "object",
+      "properties": { "eventId": { "type": "string" } },
+      "required": ["eventId"]
+    }
+  },
+  {
+    "name": "calendar_create",
+    "description": "Create a new calendar event",
+    "inputSchema": {
+      "type": "object",
+      "properties": { "title": { "type": "string" } },
+      "required": ["title"]
+    }
+  }
+]

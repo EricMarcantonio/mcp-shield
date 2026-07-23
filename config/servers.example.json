@@ -2,7 +2,7 @@
   {
     "name": "calendar",
     "command": "/app/bin/mcp-shield-testserver",
-    "args": ["-version", "v1"],
-    "env": []
+    "args": [],
+    "env": ["TOOLS_FILE=/config/testserver-tools.json"]
   }
 ]

@@ -3,5 +3,6 @@ data/*.db
 data/*.db-wal
 data/*.db-shm
 config/servers.json
+config/testserver-tools.json
 *.log
 .DS_Store

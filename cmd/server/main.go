@@ -1,7 +1,14 @@
 // Command server is a fake MCP server used to exercise mcp-shield's
-// manifest/diff/approval pipeline. Its tool set is selected by -version
-// (or TEST_SERVER_VERSION) so integration tests and manual testing can
-// simulate an upstream server evolving from a benign v1 to a risky v3.
+// manifest/diff/approval pipeline. Its tool set is selected one of two
+// ways:
+//   - -version / TEST_SERVER_VERSION picks a fixed built-in tool set
+//     (v1/v2/v3), used by the automated integration test.
+//   - -tools-file / TOOLS_FILE points at a JSON file of tool definitions
+//     that is re-read on every tools/list call — no restart needed. This
+//     is the knob for manual testing: edit the file, hit the gateway
+//     again, watch a new PENDING manifest appear.
+//
+// -tools-file takes precedence over -version when both are set.
 package main
 
 import (
@@ -17,6 +24,7 @@ import (
 
 func main() {
 	version := flag.String("version", "", "tool set version: v1, v2, or v3")
+	toolsFile := flag.String("tools-file", "", "path to a JSON file of tool definitions, reloaded on every tools/list call")
 	flag.Parse()
 
 	v := *version
@@ -27,13 +35,18 @@ func main() {
 		v = "v1"
 	}
 
-	tools := toolsForVersion(v)
+	tf := *toolsFile
+	if tf == "" {
+		tf = os.Getenv("TOOLS_FILE")
+	}
+
+	src := &toolSource{static: toolsForVersion(v), filePath: tf}
 
 	reader := bufio.NewReader(os.Stdin)
 	for {
 		line, err := reader.ReadBytes('\n')
 		if len(line) > 0 {
-			handleLine(line, tools)
+			handleLine(line, src.Tools())
 		}
 		if err != nil {
 			if err == io.EOF {
@@ -43,6 +56,32 @@ func main() {
 			return
 		}
 	}
+}
+
+// toolSource resolves the current tool set for each request. When
+// filePath is set, it reads and parses that file fresh every time —
+// deliberately no caching — so a manual edit takes effect on the very
+// next tools/list call.
+type toolSource struct {
+	static   []mcp.Tool
+	filePath string
+}
+
+func (s *toolSource) Tools() []mcp.Tool {
+	if s.filePath == "" {
+		return s.static
+	}
+	b, err := os.ReadFile(s.filePath)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "tools-file: read:", err)
+		return s.static
+	}
+	var tools []mcp.Tool
+	if err := json.Unmarshal(b, &tools); err != nil {
+		fmt.Fprintln(os.Stderr, "tools-file: parse:", err)
+		return s.static
+	}
+	return tools
 }
 
 func handleLine(line []byte, tools []mcp.Tool) {

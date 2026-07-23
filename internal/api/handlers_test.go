@@ -65,10 +65,11 @@ func TestApproveAndRejectFlow(t *testing.T) {
 	ctx := context.Background()
 
 	m := manifest.Build([]mcp.Tool{{Name: "calendar_read"}}, nil, nil)
-	_, _, id, _, err := wf.CheckAndRecord(ctx, serverID, m)
+	res, err := wf.CheckAndRecord(ctx, serverID, m)
 	if err != nil {
 		t.Fatalf("check and record: %v", err)
 	}
+	id := res.ManifestID
 
 	// pending should now list it
 	rr := httptest.NewRecorder()

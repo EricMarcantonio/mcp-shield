@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 	"sync"
@@ -16,6 +17,22 @@ type ServerConfig struct {
 	Env     []string `json:"env,omitempty"`
 }
 
+// GateDecision reports which tools/prompts/resources are currently safe
+// to expose and call for one server. It's deliberately not a single
+// allow/deny bool: a manifest that isn't fully approved still lets
+// through whatever is unchanged from the last approved baseline, so a
+// rejected or pending capability change only withholds the specific new
+// or changed items, not the entire server.
+type GateDecision struct {
+	ManifestID int64
+	State      string // PENDING, APPROVED, REJECTED, or SUPERSEDED
+	Warn       bool
+
+	SafeTools     map[string]bool
+	SafePrompts   map[string]bool
+	SafeResources map[string]bool
+}
+
 // Gate is implemented by the approval workflow. It is defined here (in
 // terms of this package's own Tool/Prompt/Resource types) rather than in
 // terms of a manifest.Manifest, so that internal/mcp never has to import
@@ -24,7 +41,7 @@ type ServerConfig struct {
 // that bridges this interface to approval.Workflow lives in internal/app,
 // which is free to import both.
 type Gate interface {
-	CheckAndRecord(ctx context.Context, serverName string, tools []Tool, prompts []Prompt, resources []Resource) (allowed, warn bool, manifestID int64, state string, err error)
+	CheckAndRecord(ctx context.Context, serverName string, tools []Tool, prompts []Prompt, resources []Resource) (*GateDecision, error)
 }
 
 // serverSession holds the lazily-started upstream connection for one
@@ -121,38 +138,35 @@ func (h *DownstreamHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	allowed, _, _, state, err := h.gate.CheckAndRecord(ctx, name, tools, prompts, resources)
+	decision, err := h.gate.CheckAndRecord(ctx, name, tools, prompts, resources)
 	if err != nil {
 		writeError(w, req.ID, CodeUpstreamError, "gate check failed: "+err.Error())
-		return
-	}
-	if !allowed {
-		code := CodeManifestPending
-		msg := "manifest pending approval"
-		if state == "REJECTED" {
-			code = CodeManifestRejected
-			msg = "manifest rejected"
-		}
-		writeError(w, req.ID, code, msg)
 		return
 	}
 
 	switch req.Method {
 	case MethodInitialize:
+		// The handshake itself reveals no capability data, so it's never
+		// gated — a client must be able to connect even to a brand new,
+		// fully unapproved server; it just won't see any tools yet.
 		writeResult(w, req.ID, InitializeResult{
 			ProtocolVersion: "2024-11-05",
 			ServerInfo:      ServerInfo{Name: name, Version: "proxied"},
 		})
 	case MethodToolsList:
-		writeResult(w, req.ID, ToolsListResult{Tools: tools})
+		writeResult(w, req.ID, ToolsListResult{Tools: filterTools(tools, decision.SafeTools)})
 	case MethodPromptsList:
-		writeResult(w, req.ID, PromptsListResult{Prompts: prompts})
+		writeResult(w, req.ID, PromptsListResult{Prompts: filterPrompts(prompts, decision.SafePrompts)})
 	case MethodResourcesList:
-		writeResult(w, req.ID, ResourcesListResult{Resources: resources})
+		writeResult(w, req.ID, ResourcesListResult{Resources: filterResources(resources, decision.SafeResources)})
 	case MethodToolsCall:
 		var params CallToolParams
 		if err := json.Unmarshal(req.Params, &params); err != nil {
 			writeError(w, req.ID, CodeUpstreamError, "invalid tools/call params: "+err.Error())
+			return
+		}
+		if !decision.SafeTools[params.Name] {
+			writeError(w, req.ID, blockedCode(decision.State), fmt.Sprintf("tool %q is part of an unapproved manifest change (%s)", params.Name, decision.State))
 			return
 		}
 		result, err := client.CallTool(ctx, params.Name, params.Arguments)
@@ -162,6 +176,15 @@ func (h *DownstreamHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		writeResult(w, req.ID, result)
 	default:
+		// Methods we don't specifically understand (resources/read,
+		// prompts/get, notifications, ...) can't be filtered item by
+		// item without parsing method-specific params, so they get the
+		// coarse treatment: only forwarded once this server has *some*
+		// approved baseline to stand on.
+		if len(decision.SafeTools) == 0 && len(decision.SafePrompts) == 0 && len(decision.SafeResources) == 0 {
+			writeError(w, req.ID, blockedCode(decision.State), "server has no approved manifest yet")
+			return
+		}
 		resp, err := client.Call(ctx, req.Method, json.RawMessage(req.Params))
 		if err != nil {
 			writeError(w, req.ID, CodeUpstreamError, "upstream call failed: "+err.Error())
@@ -169,6 +192,43 @@ func (h *DownstreamHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		writeJSON(w, resp)
 	}
+}
+
+func blockedCode(state string) int {
+	if state == "REJECTED" {
+		return CodeManifestRejected
+	}
+	return CodeManifestPending
+}
+
+func filterTools(tools []Tool, safe map[string]bool) []Tool {
+	out := make([]Tool, 0, len(tools))
+	for _, t := range tools {
+		if safe[t.Name] {
+			out = append(out, t)
+		}
+	}
+	return out
+}
+
+func filterPrompts(prompts []Prompt, safe map[string]bool) []Prompt {
+	out := make([]Prompt, 0, len(prompts))
+	for _, p := range prompts {
+		if safe[p.Name] {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+func filterResources(resources []Resource, safe map[string]bool) []Resource {
+	out := make([]Resource, 0, len(resources))
+	for _, r := range resources {
+		if safe[r.URI] {
+			out = append(out, r)
+		}
+	}
+	return out
 }
 
 func writeResult(w http.ResponseWriter, id any, result any) {

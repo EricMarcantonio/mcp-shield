@@ -135,18 +135,29 @@ type gateAdapter struct {
 	workflow *approval.Workflow
 }
 
-func (g *gateAdapter) CheckAndRecord(ctx context.Context, serverName string, tools []mcp.Tool, prompts []mcp.Prompt, resources []mcp.Resource) (allowed, warn bool, manifestID int64, state string, err error) {
+func (g *gateAdapter) CheckAndRecord(ctx context.Context, serverName string, tools []mcp.Tool, prompts []mcp.Prompt, resources []mcp.Resource) (*mcp.GateDecision, error) {
 	srv, err := g.store.GetServerByName(ctx, serverName)
 	if err != nil {
-		return false, false, 0, "", err
+		return nil, err
 	}
 	if srv == nil {
 		srv, err = g.store.CreateServer(ctx, serverName, "")
 		if err != nil {
-			return false, false, 0, "", err
+			return nil, err
 		}
 	}
 
 	m := manifest.Build(tools, prompts, resources)
-	return g.workflow.CheckAndRecord(ctx, srv.ID, m)
+	result, err := g.workflow.CheckAndRecord(ctx, srv.ID, m)
+	if err != nil {
+		return nil, err
+	}
+	return &mcp.GateDecision{
+		ManifestID:    result.ManifestID,
+		State:         result.State,
+		Warn:          result.Warn,
+		SafeTools:     result.SafeTools,
+		SafePrompts:   result.SafePrompts,
+		SafeResources: result.SafeResources,
+	}, nil
 }

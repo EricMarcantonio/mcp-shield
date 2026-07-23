@@ -6,3 +6,4 @@ config/servers.json
 config/testserver-tools.json
 *.log
 .DS_Store
+.idea/

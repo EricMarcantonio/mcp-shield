@@ -43,73 +43,181 @@ func New(store database.Store, failMode FailMode) *Workflow {
 	return &Workflow{store: store, failMode: failMode}
 }
 
+// CheckResult reports the gate's decision for one manifest snapshot. A
+// manifest that is not fully APPROVED is no longer all-or-nothing: tools
+// (and prompts/resources) that are byte-identical to the current approved
+// baseline stay in Safe* and keep working, while only the new or changed
+// ones are withheld pending a decision. A server with no approved baseline
+// at all (first-ever connect) has empty Safe* sets, which is the fail
+// closed starting state.
+type CheckResult struct {
+	ManifestID int64
+	State      string
+	Warn       bool // failMode is warn: everything is allowed, this is advisory only
+
+	SafeTools     map[string]bool
+	SafePrompts   map[string]bool
+	SafeResources map[string]bool
+}
+
 // CheckAndRecord is the gate: given a live manifest fetched from an
 // upstream server, it looks up (or creates) the matching manifest row and
-// reports whether traffic should be allowed.
+// computes which tools/prompts/resources are safe to expose right now.
 //
-//   - Hash matches an APPROVED row              -> allowed.
-//   - Hash matches any other state (PENDING/REJECTED/SUPERSEDED) -> not
-//     allowed (unless failMode is warn), no new row created.
-//   - Hash is new                                -> a PENDING row is
-//     created (diffed + risk-classified against the current approved
-//     baseline, if any) and traffic is not allowed (unless failMode is warn).
-func (w *Workflow) CheckAndRecord(ctx context.Context, serverID int64, m *manifest.Manifest) (allowed, warn bool, manifestID int64, state string, err error) {
+//   - Hash matches the current APPROVED baseline exactly -> everything safe.
+//   - Otherwise (hash is PENDING/REJECTED/SUPERSEDED, or new)         ->
+//     only the subset unchanged from the current approved baseline is
+//     safe; new or changed items are withheld. A brand new manifest row
+//     is inserted (diffed + risk-classified) the first time a given hash
+//     is seen; a hash seen before just reuses its existing row/state.
+//   - failMode warn overrides withholding: everything is marked safe,
+//     Warn is set, but the manifest's real state is still recorded as-is.
+func (w *Workflow) CheckAndRecord(ctx context.Context, serverID int64, m *manifest.Manifest) (*CheckResult, error) {
 	canonical, err := manifest.Canonicalize(m)
 	if err != nil {
-		return false, false, 0, "", fmt.Errorf("approval: canonicalize: %w", err)
+		return nil, fmt.Errorf("approval: canonicalize: %w", err)
 	}
 	hash := manifest.Hash(canonical)
 
-	existing, err := w.store.GetManifestByHash(ctx, serverID, hash)
-	if err != nil {
-		return false, false, 0, "", fmt.Errorf("approval: lookup manifest: %w", err)
-	}
-	if existing != nil {
-		allowed := existing.State == database.StateApproved
-		if !allowed && w.failMode == FailModeWarn {
-			return true, true, existing.ID, existing.State, nil
-		}
-		return allowed, false, existing.ID, existing.State, nil
-	}
-
 	baseline, err := w.store.GetApprovedManifest(ctx, serverID)
 	if err != nil {
-		return false, false, 0, "", fmt.Errorf("approval: lookup baseline: %w", err)
+		return nil, fmt.Errorf("approval: lookup baseline: %w", err)
 	}
+
+	// Fast path: this exact snapshot is the approved baseline itself, so
+	// there is nothing to diff — everything is safe.
+	if baseline != nil && baseline.Hash == hash {
+		return &CheckResult{
+			ManifestID:    baseline.ID,
+			State:         database.StateApproved,
+			SafeTools:     allToolNames(m),
+			SafePrompts:   allPromptNames(m),
+			SafeResources: allResourceURIs(m),
+		}, nil
+	}
+
 	var baselineManifest *manifest.Manifest
 	if baseline != nil {
 		bm, err := manifestFromRecord(baseline)
 		if err != nil {
-			return false, false, 0, "", fmt.Errorf("approval: decode baseline: %w", err)
+			return nil, fmt.Errorf("approval: decode baseline: %w", err)
 		}
 		baselineManifest = bm
 	}
-
 	d := diff.Compare(baselineManifest, m)
-	risk, _ := diff.ClassifyRisk(d)
-	diffBytes, err := json.Marshal(d)
-	if err != nil {
-		return false, false, 0, "", fmt.Errorf("approval: marshal diff: %w", err)
-	}
-	diffJSON := string(diffBytes)
+	safeTools, safePrompts, safeResources := unchangedSets(m, d)
 
-	rec := &database.ManifestRecord{
-		ServerID:      serverID,
-		Hash:          hash,
-		CanonicalJSON: string(canonical),
-		State:         database.StatePending,
-		RiskLevel:     risk,
-		DiffJSON:      diffJSON,
-	}
-	id, err := w.store.InsertManifest(ctx, rec)
+	existing, err := w.store.GetManifestByHash(ctx, serverID, hash)
 	if err != nil {
-		return false, false, 0, "", fmt.Errorf("approval: insert manifest: %w", err)
+		return nil, fmt.Errorf("approval: lookup manifest: %w", err)
+	}
+
+	var manifestID int64
+	var state string
+	if existing != nil {
+		manifestID, state = existing.ID, existing.State
+	} else {
+		risk, _ := diff.ClassifyRisk(d)
+		diffBytes, err := json.Marshal(d)
+		if err != nil {
+			return nil, fmt.Errorf("approval: marshal diff: %w", err)
+		}
+		id, err := w.store.InsertManifest(ctx, &database.ManifestRecord{
+			ServerID:      serverID,
+			Hash:          hash,
+			CanonicalJSON: string(canonical),
+			State:         database.StatePending,
+			RiskLevel:     risk,
+			DiffJSON:      string(diffBytes),
+		})
+		if err != nil {
+			return nil, fmt.Errorf("approval: insert manifest: %w", err)
+		}
+		manifestID, state = id, database.StatePending
 	}
 
 	if w.failMode == FailModeWarn {
-		return true, true, id, database.StatePending, nil
+		return &CheckResult{
+			ManifestID: manifestID, State: state, Warn: true,
+			SafeTools: allToolNames(m), SafePrompts: allPromptNames(m), SafeResources: allResourceURIs(m),
+		}, nil
 	}
-	return false, false, id, database.StatePending, nil
+	return &CheckResult{
+		ManifestID: manifestID, State: state,
+		SafeTools: safeTools, SafePrompts: safePrompts, SafeResources: safeResources,
+	}, nil
+}
+
+func allToolNames(m *manifest.Manifest) map[string]bool {
+	out := make(map[string]bool, len(m.Tools))
+	for _, t := range m.Tools {
+		out[t.Name] = true
+	}
+	return out
+}
+
+func allPromptNames(m *manifest.Manifest) map[string]bool {
+	out := make(map[string]bool, len(m.Prompts))
+	for _, p := range m.Prompts {
+		out[p.Name] = true
+	}
+	return out
+}
+
+func allResourceURIs(m *manifest.Manifest) map[string]bool {
+	out := make(map[string]bool, len(m.Resources))
+	for _, r := range m.Resources {
+		out[r.URI] = true
+	}
+	return out
+}
+
+// unchangedSets returns the tools/prompts/resources present in m that the
+// diff did not mark as added or changed relative to the baseline — i.e.
+// the subset that's identical to what's already approved and therefore
+// safe to keep exposing even while the rest of the manifest is pending or
+// rejected.
+func unchangedSets(m *manifest.Manifest, d *diff.Diff) (tools, prompts, resources map[string]bool) {
+	touchedTools := toSet(d.AddedTools)
+	for _, tc := range d.ChangedTools {
+		touchedTools[tc.Name] = true
+	}
+	touchedPrompts := toSet(d.AddedPrompts)
+	for _, pc := range d.ChangedPrompts {
+		touchedPrompts[pc.Name] = true
+	}
+	touchedResources := toSet(d.AddedResources)
+	for _, rc := range d.ChangedResources {
+		touchedResources[rc.URI] = true
+	}
+
+	tools = make(map[string]bool)
+	for _, t := range m.Tools {
+		if !touchedTools[t.Name] {
+			tools[t.Name] = true
+		}
+	}
+	prompts = make(map[string]bool)
+	for _, p := range m.Prompts {
+		if !touchedPrompts[p.Name] {
+			prompts[p.Name] = true
+		}
+	}
+	resources = make(map[string]bool)
+	for _, r := range m.Resources {
+		if !touchedResources[r.URI] {
+			resources[r.URI] = true
+		}
+	}
+	return tools, prompts, resources
+}
+
+func toSet(names []string) map[string]bool {
+	out := make(map[string]bool, len(names))
+	for _, n := range names {
+		out[n] = true
+	}
+	return out
 }
 
 // Approve marks a PENDING manifest APPROVED, supersedes the server's

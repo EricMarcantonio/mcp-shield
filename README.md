@@ -12,8 +12,12 @@ updated upstream server could silently add a `delete_*`, `upload_*`, or
 `execute_*` tool and start receiving calls from a trusted AI client with no
 warning. mcp-shield closes that gap: every connection is fingerprinted into
 a canonical manifest, diffed against the last approved version, risk
-classified, and gated. Unknown or unapproved manifests are blocked by
-default (fail closed).
+classified, and gated. New or changed capabilities are withheld until a
+human approves them — but withholding is scoped to what actually changed,
+not the whole server: tools that are byte-identical to the last approved
+version keep working even while a new or modified tool sits pending or
+gets rejected. A rejected change never brings down the tools you already
+trusted.
 
 ## Architecture
 
@@ -44,6 +48,27 @@ Client (HTTP JSON-RPC) --> :8080 mcp-shield proxy --> stdio --> upstream MCP ser
   client — there's no "already approved this session" shortcut a server
   could exploit by changing behavior mid-session.
 
+## Partial allow, not all-or-nothing
+
+The gate's decision (`approval.CheckResult` / `mcp.GateDecision`) is a
+per-item set of safe tool/prompt/resource names, not a single allow/deny
+bool:
+
+- A tool identical to the current approved baseline is always in the safe
+  set and keeps flowing through `tools/list` and `tools/call`, regardless
+  of what else on the server is pending or rejected.
+- A new or changed tool is excluded from `tools/list` (it's silently
+  omitted, not an error) and `tools/call` on it returns a JSON-RPC error
+  naming that specific tool and the manifest state it belongs to.
+- A server with **no** approved baseline at all (first-ever connect) has
+  an empty safe set — fail closed until at least one manifest is approved.
+- `initialize` is never gated (it reveals no capability data, so blocking
+  it would just break the handshake for no security benefit).
+- Passthrough methods mcp-shield doesn't specifically parse
+  (`resources/read`, `prompts/get`, ...) can't be filtered item by item,
+  so they fall back to a coarse check: forwarded only once the server has
+  *some* approved baseline, blocked entirely otherwise.
+
 ## Manifest immutability & fail-closed, enforced structurally
 
 - `database.Store` has exactly one write path for an existing manifest
@@ -53,9 +78,10 @@ Client (HTTP JSON-RPC) --> :8080 mcp-shield proxy --> stdio --> upstream MCP ser
 - `approval.Workflow` only allows the transitions
   `PENDING→APPROVED`, `PENDING→REJECTED`, `APPROVED→SUPERSEDED`; anything
   else returns `ErrInvalidTransition`/`ErrNotPending` before it reaches SQL.
-- Default `FAIL_MODE=block`: any manifest that isn't in `APPROVED` state
-  blocks traffic with a JSON-RPC error. `FAIL_MODE=warn` exists for
-  initial rollout observation but is never the default.
+- Default `FAIL_MODE=block`: anything not in the approved baseline is
+  withheld (see "Partial allow" above — this is per-item, not a whole-server
+  block). `FAIL_MODE=warn` allows everything through regardless of state,
+  for initial rollout observation; it is never the production default.
 
 ## Risk classification
 
@@ -79,7 +105,8 @@ make docker-up
 
 Point an MCP-capable HTTP client at `http://localhost:8080/mcp/<name>`
 (the `name` from `config/servers.json`). First connection creates a
-PENDING manifest and blocks traffic. Review and approve it:
+PENDING manifest; since there's no approved baseline yet, `tools/list`
+comes back empty and any `tools/call` is blocked. Review and approve it:
 
 ```sh
 curl localhost:8081/api/manifests/pending
@@ -105,33 +132,49 @@ make docker-up
 request, no restart needed (the test server re-reads and re-parses the
 file on every `tools/list` call).
 
-Trigger a connect and see it blocked, PENDING, low risk:
+Trigger a connect — first-ever connect has no approved baseline, so
+`tools/list` comes back with an empty `tools` array (not an error) and
+creates a PENDING manifest:
 
 ```sh
 curl -s -X POST localhost:8080/mcp/calendar -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
 curl -s localhost:8081/api/manifests/pending
 ```
 
-Approve it so a baseline exists:
+Approve it so a baseline exists — `tools/list` now returns both tools:
 
 ```sh
 curl -s -X POST localhost:8081/api/manifests/1/approve -d '{"username":"you"}'
+curl -s -X POST localhost:8080/mcp/calendar -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
 ```
 
 Now edit `config/testserver-tools.json` by hand — this is the "modify the
 schema and watch the proxy react" step. Try each of these and re-run the
-`tools/list` curl above after each edit to see a fresh PENDING manifest
-appear in `/api/manifests/pending`:
+`tools/list` curl above after each edit. Watch two things: a fresh PENDING
+manifest appears in `/api/manifests/pending`, **and** `tools/list` still
+returns the tools you didn't touch — only the new/changed one drops out:
 
 - **Add a field to an existing tool's `inputSchema`** (e.g. add
   `"notes": {"type": "string"}` under `calendar_create`'s `properties`) →
-  expect risk `MEDIUM` ("schema changed").
-- **Change a tool's `description` only** → expect risk `LOW`.
+  risk `MEDIUM`; `calendar_create` itself drops out of `tools/list` until
+  approved, `calendar_read` is unaffected.
+- **Change a tool's `description` only** → risk `LOW`, same partial effect.
 - **Add a new tool object** named e.g. `upload_receipt` or
-  `delete_event` → expect risk `HIGH` (matches the `upload`/`delete`
-  keyword list).
+  `delete_event` → risk `HIGH` (matches the `upload`/`delete` keyword
+  list); the two existing tools keep working, only the new one is
+  withheld. Confirm with `tools/call`:
+  ```sh
+  curl -s -X POST localhost:8080/mcp/calendar -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"calendar_read"}}'   # succeeds
+  curl -s -X POST localhost:8080/mcp/calendar -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"upload_receipt"}}'  # blocked
+  ```
+  Reject it (`curl -X POST localhost:8081/api/manifests/{id}/reject -d '{"username":"you"}'`)
+  and re-run both calls — `calendar_read` still works, `upload_receipt`
+  still blocked. That's the point: a rejected change never takes down
+  what you already approved.
 - **Remove a tool entirely** from the array → shows up in `removed_tools`
-  in the diff (`curl localhost:8081/api/manifests/{id}/diff`).
+  in the diff (`curl localhost:8081/api/manifests/{id}/diff`); it just
+  stops appearing in `tools/list` since the upstream server no longer
+  offers it — nothing to approve or reject.
 
 You can also drive this from the dashboard at `http://localhost:8081/`
 instead of curl — approve/reject buttons are right there next to the diff.

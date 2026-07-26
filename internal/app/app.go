@@ -26,6 +26,10 @@ type Config struct {
 	FailMode     approval.FailMode
 	Servers      []mcp.ServerConfig
 	TemplatesDir string // empty uses api.DefaultTemplatesDir
+
+	// UpstreamTimeout bounds one proxied request's upstream work; zero
+	// uses mcp.DefaultUpstreamTimeout.
+	UpstreamTimeout time.Duration
 }
 
 type App struct {
@@ -64,6 +68,9 @@ func New(cfg Config) (*App, error) {
 	if err != nil {
 		_ = store.Close()
 		return nil, fmt.Errorf("app: init downstream handler: %w", err)
+	}
+	if cfg.UpstreamTimeout > 0 {
+		downstream.UpstreamTimeout = cfg.UpstreamTimeout
 	}
 
 	var lc net.ListenConfig

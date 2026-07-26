@@ -253,6 +253,16 @@ func (c *UpstreamClient) CallTool(ctx context.Context, name string, args json.Ra
 	return &result, nil
 }
 
+// Closed reports whether the transport has terminated. Once it has, this
+// client can never serve another call — dispatchLoop has already failed every
+// pending request and the subprocess is gone — so the owning session must
+// discard it and spawn a replacement rather than keep handing it out.
+func (c *UpstreamClient) Closed() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.closed
+}
+
 func (c *UpstreamClient) Close() error {
 	return c.transport.Close()
 }

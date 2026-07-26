@@ -59,6 +59,14 @@ func runDaemon() error {
 		TemplatesDir: os.Getenv("TEMPLATES_DIR"),
 	}
 
+	if raw := os.Getenv("UPSTREAM_TIMEOUT"); raw != "" {
+		timeout, err := time.ParseDuration(raw)
+		if err != nil {
+			return fmt.Errorf("UPSTREAM_TIMEOUT %q: %w", raw, err)
+		}
+		cfg.UpstreamTimeout = timeout
+	}
+
 	servers, err := loadServerConfig(getenv("CONFIG_PATH", "config/servers.json"))
 	if err != nil {
 		return fmt.Errorf("load server config: %w", err)

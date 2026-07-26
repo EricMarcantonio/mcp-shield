@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -50,9 +51,13 @@ func cliServers() error {
 		return err
 	}
 	tw := tabwriter.NewWriter(os.Stdout, 0, 2, 2, ' ', 0)
-	fmt.Fprintln(tw, "ID\tNAME\tENDPOINT\tREGISTERED")
+	if _, err := fmt.Fprintln(tw, "ID\tNAME\tENDPOINT\tREGISTERED"); err != nil {
+		return err
+	}
 	for _, r := range rows {
-		fmt.Fprintf(tw, "%d\t%s\t%s\t%s\n", r.ID, r.Name, r.Endpoint, r.CreatedAt.Format(time.RFC3339))
+		if _, err := fmt.Fprintf(tw, "%d\t%s\t%s\t%s\n", r.ID, r.Name, r.Endpoint, r.CreatedAt.Format(time.RFC3339)); err != nil {
+			return err
+		}
 	}
 	return tw.Flush()
 }
@@ -76,9 +81,13 @@ func cliManifests() error {
 		return nil
 	}
 	tw := tabwriter.NewWriter(os.Stdout, 0, 2, 2, ' ', 0)
-	fmt.Fprintln(tw, "ID\tSERVER\tRISK\tHASH\tCHANGES")
+	if _, err := fmt.Fprintln(tw, "ID\tSERVER\tRISK\tHASH\tCHANGES"); err != nil {
+		return err
+	}
 	for _, r := range rows {
-		fmt.Fprintf(tw, "%d\t%s\t%s\t%.12s\t%d change(s)\n", r.ID, r.Server, r.Risk, r.Hash, len(r.Changes))
+		if _, err := fmt.Fprintf(tw, "%d\t%s\t%s\t%.12s\t%d change(s)\n", r.ID, r.Server, r.Risk, r.Hash, len(r.Changes)); err != nil {
+			return err
+		}
 	}
 	return tw.Flush()
 }
@@ -87,7 +96,9 @@ func cliDecision(action string, args []string) error {
 	fs := flag.NewFlagSet(action, flag.ExitOnError)
 	username := fs.String("username", "cli", "who is making this decision")
 	reason := fs.String("reason", "", "why")
-	fs.Parse(args)
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
 	if fs.NArg() != 1 {
 		return fmt.Errorf("usage: mcp-shield %s <manifest-id>", action)
 	}
@@ -97,12 +108,19 @@ func cliDecision(action string, args []string) error {
 	}
 
 	body, _ := json.Marshal(map[string]string{"username": *username, "reason": *reason})
+	// The target is the operator's own mcp-shield API (MCP_SHIELD_API env
+	// var, defaulting to localhost:8081), not attacker-controlled input.
 	url := fmt.Sprintf("%s/api/manifests/%d/%s", apiBase(), id, action)
-	resp, err := http.Post(url, "application/json", bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = resp.Body.Close() }()
 	b, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode >= 300 {
 		return fmt.Errorf("%s failed: %s: %s", action, resp.Status, string(b))
@@ -129,11 +147,11 @@ func cliDiff(args []string) error {
 }
 
 func getJSON(path string, out any) error {
-	resp, err := http.Get(apiBase() + path)
+	resp, err := apiGet(path)
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode >= 300 {
 		b, _ := io.ReadAll(resp.Body)
 		return fmt.Errorf("%s: %s: %s", path, resp.Status, string(b))
@@ -141,12 +159,23 @@ func getJSON(path string, out any) error {
 	return json.NewDecoder(resp.Body).Decode(out)
 }
 
+// apiGet issues a GET against the operator-configured mcp-shield API
+// (MCP_SHIELD_API env var, defaulting to localhost:8081), not
+// attacker-controlled input.
+func apiGet(path string) (*http.Response, error) {
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, apiBase()+path, nil) //nolint:gosec // G704: URL is built from the operator-configured API base, not external input
+	if err != nil {
+		return nil, err
+	}
+	return http.DefaultClient.Do(req) //nolint:gosec // G704: request targets the operator-configured API base, not external input
+}
+
 func getRaw(path string, out *bytes.Buffer) error {
-	resp, err := http.Get(apiBase() + path)
+	resp, err := apiGet(path)
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode >= 300 {
 		b, _ := io.ReadAll(resp.Body)
 		return fmt.Errorf("%s: %s: %s", path, resp.Status, string(b))

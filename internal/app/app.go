@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"time"
 
 	"github.com/EricMarcantonio/mcp-shield/internal/api"
 	"github.com/EricMarcantonio/mcp-shield/internal/approval"
@@ -61,19 +62,20 @@ func New(cfg Config) (*App, error) {
 	gate := &gateAdapter{store: store, workflow: workflow}
 	downstream, err := mcp.NewDownstreamHandler(cfg.Servers, gate)
 	if err != nil {
-		store.Close()
+		_ = store.Close()
 		return nil, fmt.Errorf("app: init downstream handler: %w", err)
 	}
 
-	proxyLn, err := net.Listen("tcp", cfg.ProxyAddr)
+	var lc net.ListenConfig
+	proxyLn, err := lc.Listen(context.Background(), "tcp", cfg.ProxyAddr)
 	if err != nil {
-		store.Close()
+		_ = store.Close()
 		return nil, fmt.Errorf("app: listen proxy: %w", err)
 	}
-	apiLn, err := net.Listen("tcp", cfg.APIAddr)
+	apiLn, err := lc.Listen(context.Background(), "tcp", cfg.APIAddr)
 	if err != nil {
-		proxyLn.Close()
-		store.Close()
+		_ = proxyLn.Close()
+		_ = store.Close()
 		return nil, fmt.Errorf("app: listen api: %w", err)
 	}
 
@@ -88,8 +90,8 @@ func New(cfg Config) (*App, error) {
 		downstream: downstream,
 		proxyLn:    proxyLn,
 		apiLn:      apiLn,
-		proxySrv:   &http.Server{Handler: proxyMux},
-		apiSrv:     &http.Server{Handler: apiHandler},
+		proxySrv:   &http.Server{Handler: proxyMux, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 60 * time.Second, IdleTimeout: 120 * time.Second},
+		apiSrv:     &http.Server{Handler: apiHandler, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 60 * time.Second, IdleTimeout: 120 * time.Second},
 		ProxyAddr:  proxyLn.Addr().String(),
 		APIAddr:    apiLn.Addr().String(),
 	}
@@ -99,7 +101,7 @@ func New(cfg Config) (*App, error) {
 // Start launches the proxy and API listeners in background goroutines and
 // returns immediately. Serve errors after a clean Shutdown are swallowed;
 // anything else is logged.
-func (a *App) Start(ctx context.Context) error {
+func (a *App) Start(_ context.Context) error {
 	go func() {
 		if err := a.proxySrv.Serve(a.proxyLn); err != nil && err != http.ErrServerClosed {
 			slog.Error("proxy server exited", "error", err)

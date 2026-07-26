@@ -185,7 +185,7 @@ func (h *DownstreamHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			writeError(w, req.ID, blockedCode(decision.State), "server has no approved manifest yet")
 			return
 		}
-		resp, err := client.Call(ctx, req.Method, json.RawMessage(req.Params))
+		resp, err := client.Call(ctx, req.Method, req.Params)
 		if err != nil {
 			writeError(w, req.ID, CodeUpstreamError, "upstream call failed: "+err.Error())
 			return

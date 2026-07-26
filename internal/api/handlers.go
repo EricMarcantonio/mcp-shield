@@ -73,7 +73,7 @@ func (s *Server) routes(staticDir string) {
 
 // --- JSON API ---------------------------------------------------------------
 
-func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleHealthz(w http.ResponseWriter, _ *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte(`{"status":"ok"}`))
 }
@@ -139,7 +139,7 @@ func (s *Server) handleAPIGetManifestDiff(w http.ResponseWriter, r *http.Request
 		_, _ = w.Write([]byte(`null`))
 		return
 	}
-	_, _ = w.Write([]byte(m.DiffJSON))
+	_, _ = w.Write([]byte(m.DiffJSON)) //nolint:gosec // G705: Content-Type is set to application/json above; DiffJSON is internally-generated, already-validated JSON, not rendered as HTML
 }
 
 type decisionRequest struct {

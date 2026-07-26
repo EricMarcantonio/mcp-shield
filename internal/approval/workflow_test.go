@@ -17,7 +17,7 @@ func newTestWorkflow(t *testing.T) (*Workflow, database.Store, int64) {
 	if err != nil {
 		t.Fatalf("open db: %v", err)
 	}
-	t.Cleanup(func() { store.Close() })
+	t.Cleanup(func() { _ = store.Close() })
 
 	srv, err := store.CreateServer(context.Background(), "calendar", "")
 	if err != nil {
@@ -217,7 +217,7 @@ func TestFailModeWarnAllowsButFlags(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open db: %v", err)
 	}
-	t.Cleanup(func() { store.Close() })
+	t.Cleanup(func() { _ = store.Close() })
 	srv, _ := store.CreateServer(ctx, "calendar", "")
 
 	wf := New(store, FailModeWarn)

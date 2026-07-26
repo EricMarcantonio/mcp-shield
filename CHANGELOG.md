@@ -6,6 +6,23 @@ All notable changes to mcp-shield are documented here. Format follows
 
 ## [Unreleased]
 
+### Removed
+- **Breaking:** risk classification (`ClassifyRisk`, the `RiskLow`/
+  `RiskMedium`/`RiskHigh` constants, and the substring `riskKeywords` list
+  in `internal/diff`) is deleted outright, along with everywhere it
+  surfaced: the `risk_level` database column, the `risk`/`risk,omitempty`
+  fields on the `/api/manifests/pending` and `/api/manifests/{id}`
+  responses, the `RISK` column in `mcp-shield manifests`, and the risk
+  badge in both dashboard templates. A substring match that flags
+  `filesystem_status` (contains "file") while missing a tool named
+  `sync_to_remote` entirely was attaching an authoritative-looking label
+  to a judgement the tool cannot make. The diff — added/removed/changed
+  against the approved baseline — was already the complete signal; see
+  decision D8 in
+  [docs/superpowers/specs/2026-07-25-oss-hardening-design.md](docs/superpowers/specs/2026-07-25-oss-hardening-design.md).
+  Gate semantics are unchanged: risk never affected whether a capability
+  was withheld, only how the pending list displayed it.
+
 ### Added
 - LICENSE, SECURITY.md, CONTRIBUTING.md, CODE_OF_CONDUCT.md, issue/PR templates.
 - `mcp-shield version` subcommand; the binary is now built with

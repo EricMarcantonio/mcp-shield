@@ -12,12 +12,8 @@ import (
 	"github.com/EricMarcantonio/mcp-shield/internal/diff"
 )
 
-type dashboardPendingRow struct {
-	PendingManifestView
-}
-
 type dashboardHomeData struct {
-	Pending []dashboardPendingRow
+	Pending []PendingManifestView
 }
 
 type dashboardServersRow struct {
@@ -104,14 +100,14 @@ func (s *Server) handleDashboardHome(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	rows := make([]dashboardPendingRow, 0, len(pending))
+	rows := make([]PendingManifestView, 0, len(pending))
 	for _, m := range pending {
 		v, err := toPendingView(ctx, s.store, m)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		rows = append(rows, dashboardPendingRow{v})
+		rows = append(rows, v)
 	}
 	renderTemplate(w, s.tmpl, "pending.html", dashboardHomeData{Pending: rows})
 }

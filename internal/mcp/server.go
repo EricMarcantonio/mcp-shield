@@ -173,7 +173,7 @@ func (h *DownstreamHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// gated — a client must be able to connect even to a brand new,
 		// fully unapproved server; it just won't see any tools yet.
 		writeResult(w, req.ID, InitializeResult{
-			ProtocolVersion: "2024-11-05",
+			ProtocolVersion: ProtocolVersion,
 			ServerInfo:      ServerInfo{Name: name, Version: "proxied"},
 		})
 	case MethodToolsList:

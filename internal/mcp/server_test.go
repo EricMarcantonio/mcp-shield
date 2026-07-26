@@ -18,7 +18,7 @@ type fakeUpstream struct {
 }
 
 func (f *fakeUpstream) Initialize(_ context.Context) (*InitializeResult, error) {
-	return &InitializeResult{ProtocolVersion: "2024-11-05"}, nil
+	return &InitializeResult{ProtocolVersion: ProtocolVersion}, nil
 }
 func (f *fakeUpstream) ListTools(_ context.Context) ([]Tool, error)     { return f.tools, nil }
 func (f *fakeUpstream) ListPrompts(_ context.Context) ([]Prompt, error) { return f.prompts, nil }
@@ -175,8 +175,9 @@ func TestInitializeNeverGated(t *testing.T) {
 	if err := json.Unmarshal(resp.Result, &result); err != nil {
 		t.Fatalf("decode result: %v", err)
 	}
-	if result.ProtocolVersion == "" {
-		t.Fatal("expected a protocol version in the initialize result")
+	if result.ProtocolVersion != ProtocolVersion {
+		t.Fatalf("downstream handshake advertised %q, want the one revision this gateway speaks (%q)",
+			result.ProtocolVersion, ProtocolVersion)
 	}
 }
 

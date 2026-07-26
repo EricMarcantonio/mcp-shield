@@ -37,6 +37,44 @@ func respondToNextRequest(t *testing.T, ft *fakeTransport, result json.RawMessag
 	}()
 }
 
+// TestInitializeAdvertisesTargetProtocolVersion pins decision D7: the
+// gateway speaks exactly one MCP revision, 2025-11-25, and it must be the
+// same one on both sides of the proxy — an upstream handshake at one
+// revision and a downstream handshake at another would let a client and a
+// server disagree about the protocol while the gateway told each what it
+// wanted to hear.
+func TestInitializeAdvertisesTargetProtocolVersion(t *testing.T) {
+	if ProtocolVersion != "2025-11-25" {
+		t.Fatalf("expected the gateway to target MCP 2025-11-25 (decision D7), got %q", ProtocolVersion)
+	}
+
+	c, ft := newClientWithFake(t)
+	handshake := make(chan []byte, 1)
+	go func() {
+		raw := <-ft.sent
+		handshake <- raw
+		var r Request
+		_ = json.Unmarshal(raw, &r)
+		out, _ := json.Marshal(Response{JSONRPC: JSONRPCVersion, ID: r.ID, Result: json.RawMessage(`{"protocolVersion":"2025-11-25"}`)})
+		ft.frames <- out
+	}()
+	if _, err := c.Initialize(context.Background()); err != nil {
+		t.Fatalf("initialize: %v", err)
+	}
+
+	var sent Request
+	if err := json.Unmarshal(<-handshake, &sent); err != nil {
+		t.Fatalf("decode sent request: %v", err)
+	}
+	var params InitializeParams
+	if err := json.Unmarshal(sent.Params, &params); err != nil {
+		t.Fatalf("decode initialize params: %v", err)
+	}
+	if params.ProtocolVersion != ProtocolVersion {
+		t.Fatalf("upstream handshake advertised %q, want %q", params.ProtocolVersion, ProtocolVersion)
+	}
+}
+
 func TestInitializeDecodesProtocolVersion(t *testing.T) {
 	c, ft := newClientWithFake(t)
 	respondToNextRequest(t, ft, json.RawMessage(`{"protocolVersion":"2024-11-05","serverInfo":{"name":"cal","version":"1"}}`), "")

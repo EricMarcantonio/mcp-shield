@@ -177,7 +177,7 @@ func (c *UpstreamClient) Call(ctx context.Context, method string, params any) (*
 
 func (c *UpstreamClient) Initialize(ctx context.Context) (*InitializeResult, error) {
 	resp, err := c.Call(ctx, MethodInitialize, InitializeParams{
-		ProtocolVersion: "2024-11-05",
+		ProtocolVersion: ProtocolVersion,
 		ClientInfo:      ClientInfo{Name: "mcp-shield", Version: "0.1.0"},
 	})
 	if err != nil {

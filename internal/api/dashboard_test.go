@@ -11,7 +11,6 @@ import (
 
 	"github.com/EricMarcantonio/mcp-shield/internal/approval"
 	"github.com/EricMarcantonio/mcp-shield/internal/database"
-	"github.com/EricMarcantonio/mcp-shield/internal/manifest"
 	"github.com/EricMarcantonio/mcp-shield/internal/mcp"
 )
 
@@ -148,7 +147,7 @@ func TestDashboardDecisionRedirects(t *testing.T) {
 // returns its manifest ID.
 func seedPendingManifest(t *testing.T, s *Server, serverID int64) int64 {
 	t.Helper()
-	m := manifest.Build([]mcp.Tool{{Name: "calendar_read"}}, nil, nil)
+	m := mustBuild(t, []mcp.Tool{{Name: "calendar_read"}})
 	res, err := s.workflow.CheckAndRecord(context.Background(), serverID, m)
 	if err != nil {
 		t.Fatalf("check and record: %v", err)

@@ -16,6 +16,18 @@ import (
 	"github.com/EricMarcantonio/mcp-shield/internal/mcp"
 )
 
+// mustBuild builds a tool-only manifest, failing the test if the capability
+// set is inadmissible. Admissibility is manifest.Build's concern and is
+// tested there; these tests are about the HTTP surface.
+func mustBuild(t *testing.T, tools []mcp.Tool) *manifest.Manifest {
+	t.Helper()
+	m, err := manifest.Build(tools, nil, nil)
+	if err != nil {
+		t.Fatalf("build manifest: %v", err)
+	}
+	return m
+}
+
 // newTestServer's database.Store return is unused by every current caller
 // (unparam flags this) but is kept as test infrastructure for Phase 4 tests
 // that need direct store access (e.g. dashboard/gate-adapter tests).
@@ -68,7 +80,7 @@ func TestGetManifestEndpoint(t *testing.T) {
 	s, _, wf, serverID := newTestServer(t)
 	ctx := context.Background()
 
-	m := manifest.Build([]mcp.Tool{{Name: "calendar_read"}}, nil, nil)
+	m := mustBuild(t, []mcp.Tool{{Name: "calendar_read"}})
 	res, err := wf.CheckAndRecord(ctx, serverID, m)
 	if err != nil {
 		t.Fatalf("check and record: %v", err)
@@ -117,7 +129,7 @@ func TestApproveAndRejectFlow(t *testing.T) {
 	s, _, wf, serverID := newTestServer(t)
 	ctx := context.Background()
 
-	m := manifest.Build([]mcp.Tool{{Name: "calendar_read"}}, nil, nil)
+	m := mustBuild(t, []mcp.Tool{{Name: "calendar_read"}})
 	res, err := wf.CheckAndRecord(ctx, serverID, m)
 	if err != nil {
 		t.Fatalf("check and record: %v", err)
@@ -172,7 +184,7 @@ func TestRejectNonPendingConflicts(t *testing.T) {
 	s, _, wf, serverID := newTestServer(t)
 	ctx := context.Background()
 
-	m := manifest.Build([]mcp.Tool{{Name: "calendar_read"}}, nil, nil)
+	m := mustBuild(t, []mcp.Tool{{Name: "calendar_read"}})
 	res, err := wf.CheckAndRecord(ctx, serverID, m)
 	if err != nil {
 		t.Fatalf("check and record: %v", err)
@@ -205,7 +217,7 @@ func TestApproveMalformedJSONBodyStillSucceedsWithFabricatedIdentity(t *testing.
 	s, store, wf, serverID := newTestServer(t)
 	ctx := context.Background()
 
-	m := manifest.Build([]mcp.Tool{{Name: "calendar_read"}}, nil, nil)
+	m := mustBuild(t, []mcp.Tool{{Name: "calendar_read"}})
 	res, err := wf.CheckAndRecord(ctx, serverID, m)
 	if err != nil {
 		t.Fatalf("check and record: %v", err)
@@ -232,7 +244,7 @@ func TestGetManifestDiffEndpoint(t *testing.T) {
 	s, store, wf, serverID := newTestServer(t)
 	ctx := context.Background()
 
-	m := manifest.Build([]mcp.Tool{{Name: "calendar_read"}}, nil, nil)
+	m := mustBuild(t, []mcp.Tool{{Name: "calendar_read"}})
 	res, err := wf.CheckAndRecord(ctx, serverID, m)
 	if err != nil {
 		t.Fatalf("check and record: %v", err)

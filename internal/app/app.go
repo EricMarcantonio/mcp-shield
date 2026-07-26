@@ -149,7 +149,13 @@ func (g *gateAdapter) CheckAndRecord(ctx context.Context, serverName string, too
 		}
 	}
 
-	m := manifest.Build(tools, prompts, resources)
+	// A capability set that violates the protocol's unique-identity rule is
+	// rejected here, which fails the in-flight request closed rather than
+	// fingerprinting a capability set the gate could not enforce.
+	m, err := manifest.Build(tools, prompts, resources)
+	if err != nil {
+		return nil, err
+	}
 	result, err := g.workflow.CheckAndRecord(ctx, srv.ID, m)
 	if err != nil {
 		return nil, err

@@ -9,9 +9,21 @@ import (
 
 func tool(name, desc string) mcp.Tool { return mcp.Tool{Name: name, Description: desc} }
 
+// mustBuild builds a tool-only manifest, failing the test if the capability
+// set is inadmissible. Admissibility is manifest.Build's concern and is
+// tested there; these tests are about diffing valid manifests.
+func mustBuild(t *testing.T, tools []mcp.Tool) *manifest.Manifest {
+	t.Helper()
+	m, err := manifest.Build(tools, nil, nil)
+	if err != nil {
+		t.Fatalf("build manifest: %v", err)
+	}
+	return m
+}
+
 func TestCompareAddedRemovedChanged(t *testing.T) {
-	old := manifest.Build([]mcp.Tool{tool("a", "desc a"), tool("b", "desc b")}, nil, nil)
-	newM := manifest.Build([]mcp.Tool{tool("a", "desc a v2"), tool("c", "desc c")}, nil, nil)
+	old := mustBuild(t, []mcp.Tool{tool("a", "desc a"), tool("b", "desc b")})
+	newM := mustBuild(t, []mcp.Tool{tool("a", "desc a v2"), tool("c", "desc c")})
 
 	d := Compare(old, newM)
 
@@ -27,7 +39,7 @@ func TestCompareAddedRemovedChanged(t *testing.T) {
 }
 
 func TestCompareNilBaselineTreatsAllAsAdded(t *testing.T) {
-	newM := manifest.Build([]mcp.Tool{tool("calendar_read", ""), tool("calendar_create", "")}, nil, nil)
+	newM := mustBuild(t, []mcp.Tool{tool("calendar_read", ""), tool("calendar_create", "")})
 	d := Compare(nil, newM)
 	if len(d.AddedTools) != 2 {
 		t.Fatalf("expected 2 added tools on nil baseline, got %v", d.AddedTools)
@@ -99,7 +111,7 @@ func TestCompareIgnoresCanonicalizationArtifacts(t *testing.T) {
 	schemaSortedOrder := `{"type":"object","required":["data","eventId"]}`
 	schemaNaturalOrder := `{"type":"object","required":["eventId","data"]}`
 
-	baselineRaw := manifest.Build([]mcp.Tool{{Name: "upload_attachment", InputSchema: []byte(schemaSortedOrder)}}, nil, nil)
+	baselineRaw := mustBuild(t, []mcp.Tool{{Name: "upload_attachment", InputSchema: []byte(schemaSortedOrder)}})
 	canonical, err := manifest.Canonicalize(baselineRaw)
 	if err != nil {
 		t.Fatalf("canonicalize baseline: %v", err)
@@ -109,7 +121,7 @@ func TestCompareIgnoresCanonicalizationArtifacts(t *testing.T) {
 		t.Fatalf("from canonical json: %v", err)
 	}
 
-	live := manifest.Build([]mcp.Tool{{Name: "upload_attachment", InputSchema: []byte(schemaNaturalOrder)}}, nil, nil)
+	live := mustBuild(t, []mcp.Tool{{Name: "upload_attachment", InputSchema: []byte(schemaNaturalOrder)}})
 
 	d := Compare(baseline, live)
 	if len(d.ChangedTools) != 0 {

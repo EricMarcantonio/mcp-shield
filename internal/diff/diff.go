@@ -59,31 +59,31 @@ type Diff struct {
 	ChangedResources []ResourceChange `json:"changed_resources"`
 }
 
-// Compare returns the diff from old to new. old may be nil, meaning there
-// is no prior approved baseline — every tool/prompt/resource in new is
-// then reported as added.
-func Compare(old, new *manifest.Manifest) *Diff {
+// Compare returns the diff from baseline to current. baseline may be nil,
+// meaning there is no prior approved baseline — every tool/prompt/resource
+// in current is then reported as added.
+func Compare(baseline, current *manifest.Manifest) *Diff {
 	d := &Diff{
 		AddedTools: []string{}, RemovedTools: []string{}, ChangedTools: []ToolChange{},
 		AddedPrompts: []string{}, RemovedPrompts: []string{}, ChangedPrompts: []PromptChange{},
 		AddedResources: []string{}, RemovedResources: []string{}, ChangedResources: []ResourceChange{},
 	}
-	if new == nil {
+	if current == nil {
 		return d
 	}
 
-	var oldTools []mcpTool
-	var oldPrompts []mcpPrompt
-	var oldResources []mcpResource
-	if old != nil {
-		oldTools = toolsOf(old)
-		oldPrompts = promptsOf(old)
-		oldResources = resourcesOf(old)
+	var baseTools []mcpTool
+	var basePrompts []mcpPrompt
+	var baseResources []mcpResource
+	if baseline != nil {
+		baseTools = toolsOf(baseline)
+		basePrompts = promptsOf(baseline)
+		baseResources = resourcesOf(baseline)
 	}
 
-	diffTools(d, oldTools, toolsOf(new))
-	diffPrompts(d, oldPrompts, promptsOf(new))
-	diffResources(d, oldResources, resourcesOf(new))
+	diffTools(d, baseTools, toolsOf(current))
+	diffPrompts(d, basePrompts, promptsOf(current))
+	diffResources(d, baseResources, resourcesOf(current))
 
 	return d
 }

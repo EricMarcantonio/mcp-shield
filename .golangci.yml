@@ -44,16 +44,6 @@ linters:
         linters:
           - gosec
           - noctx
-      # internal/diff/diff.go on this branch predates the summarizeChanges
-      # extraction landing on chore/graphify-setup; the plan's mechanical
-      # fix here (rename Compare's old/new params) is deliberately left for
-      # whichever branch merges last, to avoid a guaranteed conflict. See
-      # Phase 2 report for detail. Remove this exclusion once that rename
-      # lands.
-      - path: internal/diff/diff\.go
-        linters:
-          - revive
-          - predeclared
 
 formatters:
   enable:

@@ -48,60 +48,6 @@ func TestCompareNilBaselineTreatsAllAsAdded(t *testing.T) {
 	}
 }
 
-func TestClassifyRiskKeywordMatrix(t *testing.T) {
-	cases := []struct {
-		name      string
-		addedTool string
-		want      string
-	}{
-		{"delete", "delete_calendar", RiskHigh},
-		{"upload", "upload_attachment", RiskHigh},
-		{"execute", "execute_command", RiskHigh},
-		{"shell", "run_shell", RiskHigh},
-		{"file", "read_file", RiskHigh},
-		{"write", "write_data", RiskHigh},
-		{"admin", "admin_reset", RiskHigh},
-		{"credential", "get_credential", RiskHigh},
-		{"benign", "calendar_read", RiskLow},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			d := &Diff{AddedTools: []string{tc.addedTool}}
-			risk, _ := ClassifyRisk(d)
-			if risk != tc.want {
-				t.Fatalf("tool %q: expected risk %s, got %s", tc.addedTool, tc.want, risk)
-			}
-		})
-	}
-}
-
-func TestClassifyRiskPrecedenceHighBeatsSchemaAndDescription(t *testing.T) {
-	d := &Diff{
-		AddedTools:   []string{"upload_x"},
-		ChangedTools: []ToolChange{{Name: "y", SchemaChanged: true}},
-	}
-	risk, _ := ClassifyRisk(d)
-	if risk != RiskHigh {
-		t.Fatalf("expected HIGH to win over MEDIUM, got %s", risk)
-	}
-}
-
-func TestClassifyRiskSchemaChangeIsMedium(t *testing.T) {
-	d := &Diff{ChangedTools: []ToolChange{{Name: "a", SchemaChanged: true}}}
-	risk, _ := ClassifyRisk(d)
-	if risk != RiskMedium {
-		t.Fatalf("expected MEDIUM, got %s", risk)
-	}
-}
-
-func TestClassifyRiskDescriptionOnlyIsLow(t *testing.T) {
-	d := &Diff{ChangedTools: []ToolChange{{Name: "a", DescriptionChanged: true}}}
-	risk, _ := ClassifyRisk(d)
-	if risk != RiskLow {
-		t.Fatalf("expected LOW, got %s", risk)
-	}
-}
-
 func TestCompareIgnoresCanonicalizationArtifacts(t *testing.T) {
 	// Regression test: a manifest's stored baseline has been through
 	// Canonicalize (which sorts primitive arrays like a schema's
@@ -198,17 +144,5 @@ func TestSummarizeCoversEveryDiffField(t *testing.T) {
 	}
 	if got := reflect.TypeOf(Diff{}).NumField(); got != 9 {
 		t.Fatalf("Diff has %d fields but this test only covers 9 — add the new field to Summarize and here", got)
-	}
-}
-
-func TestClassifyRiskKnownFalsePositiveSubstring(t *testing.T) {
-	// Documented, intentional edge case: "filesystem_status" contains
-	// "file" and trips HIGH under the literal substring rule, even
-	// though the tool itself isn't inherently dangerous. Not silently
-	// patched — see package doc comment on riskKeywords.
-	d := &Diff{AddedTools: []string{"filesystem_status"}}
-	risk, _ := ClassifyRisk(d)
-	if risk != RiskHigh {
-		t.Fatalf("expected documented false positive to still classify HIGH, got %s", risk)
 	}
 }

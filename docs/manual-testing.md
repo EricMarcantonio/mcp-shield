@@ -43,13 +43,12 @@ returns the tools you didn't touch — only the new/changed one drops out:
 
 - **Add a field to an existing tool's `inputSchema`** (e.g. add
   `"notes": {"type": "string"}` under `calendar_create`'s `properties`) →
-  risk `MEDIUM`; `calendar_create` itself drops out of `tools/list` until
-  approved, `calendar_read` is unaffected.
-- **Change a tool's `description` only** → risk `LOW`, same partial effect.
+  `calendar_create` itself drops out of `tools/list` until approved,
+  `calendar_read` is unaffected.
+- **Change a tool's `description` only** → same partial effect.
 - **Add a new tool object** named e.g. `upload_receipt` or
-  `delete_event` → risk `HIGH` (matches the `upload`/`delete` keyword
-  list); the two existing tools keep working, only the new one is
-  withheld. Confirm with `tools/call`:
+  `delete_event` → the two existing tools keep working, only the new one
+  is withheld. Confirm with `tools/call`:
   ```sh
   curl -s -X POST localhost:8080/mcp/calendar -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"calendar_read"}}'   # succeeds
   curl -s -X POST localhost:8080/mcp/calendar -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"upload_receipt"}}'  # blocked

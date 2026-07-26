@@ -1,29 +1,13 @@
-// Package diff compares two manifests and classifies the risk of the
-// difference so a human approver can quickly judge whether a capability
-// change is safe.
+// Package diff compares two manifests and reports what was added, removed,
+// or changed so a human approver can judge whether a capability change is
+// safe.
 package diff
 
 import (
 	"encoding/json"
 	"sort"
-	"strings"
 
 	"github.com/EricMarcantonio/mcp-shield/internal/manifest"
-)
-
-// riskKeywords are substrings (case-insensitive) that mark a newly added
-// tool as HIGH risk. This is a deliberately blunt heuristic: it will flag
-// legitimate tools like "filesystem_status" (contains "file") as HIGH too
-// — that's the literal rule as specified, not a bug to be silently
-// patched. A human still makes the final call in the approval workflow.
-var riskKeywords = []string{
-	"delete", "upload", "execute", "shell", "file", "write", "admin", "credential",
-}
-
-const (
-	RiskLow    = "LOW"
-	RiskMedium = "MEDIUM"
-	RiskHigh   = "HIGH"
 )
 
 type ToolChange struct {
@@ -86,51 +70,6 @@ func Compare(baseline, current *manifest.Manifest) *Diff {
 	diffResources(d, baseResources, resourcesOf(current))
 
 	return d
-}
-
-// ClassifyRisk applies the spec's precedence rule:
-//  1. HIGH  — any added tool's name substring-matches a risk keyword.
-//  2. MEDIUM — else, any changed tool's input schema differs.
-//  3. LOW    — else, any changed tool's description differs (or nothing
-//     risk-relevant changed, e.g. only prompts/resources touched).
-func ClassifyRisk(d *Diff) (risk string, reasons []string) {
-	for _, name := range d.AddedTools {
-		lower := strings.ToLower(name)
-		for _, kw := range riskKeywords {
-			if strings.Contains(lower, kw) {
-				reasons = append(reasons, "added tool \""+name+"\" matches risk keyword \""+kw+"\"")
-			}
-		}
-	}
-	if len(reasons) > 0 {
-		return RiskHigh, reasons
-	}
-
-	for _, tc := range d.ChangedTools {
-		if tc.SchemaChanged {
-			reasons = append(reasons, "tool \""+tc.Name+"\" input schema changed")
-		}
-	}
-	if len(reasons) > 0 {
-		return RiskMedium, reasons
-	}
-
-	for _, tc := range d.ChangedTools {
-		if tc.DescriptionChanged {
-			reasons = append(reasons, "tool \""+tc.Name+"\" description changed")
-		}
-	}
-	if len(reasons) > 0 {
-		return RiskLow, reasons
-	}
-
-	if len(d.AddedTools) > 0 || len(d.RemovedTools) > 0 {
-		// Added tools with no keyword match, or removed tools: still a
-		// capability change worth a human look, default to LOW.
-		return RiskLow, []string{"tool set changed"}
-	}
-
-	return RiskLow, []string{"no tool-level change"}
 }
 
 // Summarize renders a Diff as short human-readable lines, e.g. "Added

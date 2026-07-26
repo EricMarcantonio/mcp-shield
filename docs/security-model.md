@@ -1,9 +1,8 @@
 # Security model
 
-This is the full detail behind the summaries in the README's "How it works"
-and "Risk classification" sections: the exact gate semantics, the
-structural guarantees around manifest immutability and fail-closed
-behavior, and the precedence rules for risk classification.
+This is the full detail behind the summary in the README's "How it works"
+section: the exact gate semantics and the structural guarantees around
+manifest immutability and fail-closed behavior.
 
 ## Partial allow, not all-or-nothing
 
@@ -39,19 +38,3 @@ bool:
   withheld (see "Partial allow" above — this is per-item, not a whole-server
   block). `FAIL_MODE=warn` allows everything through regardless of state,
   for initial rollout observation; it is never the production default.
-
-## Risk classification
-
-Given a diff against the last approved manifest, in precedence order:
-
-1. **HIGH** — any newly added tool's name contains (case-insensitive)
-   `delete`, `upload`, `execute`, `shell`, `file`, `write`, `admin`, or
-   `credential`. This is a blunt substring match by design — it will also
-   flag a benign tool like `filesystem_status` (contains "file"). That's
-   intentional: a human still makes the final call.
-2. **MEDIUM** — a tool's `input_schema` changed.
-3. **LOW** — only a tool's description changed (or nothing risk-relevant).
-
-Nothing in the roadmap changes this keyword list or the fact that it's a
-blunt substring match; see the design doc's assumptions if you're
-wondering whether that's an oversight (it isn't).

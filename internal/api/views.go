@@ -14,7 +14,6 @@ type PendingManifestView struct {
 	ID        int64     `json:"id"`
 	Server    string    `json:"server"`
 	Hash      string    `json:"hash"`
-	Risk      string    `json:"risk"`
 	Changes   []string  `json:"changes"`
 	CreatedAt time.Time `json:"created_at"`
 }
@@ -25,7 +24,6 @@ type ManifestView struct {
 	Server    string    `json:"server"`
 	Hash      string    `json:"hash"`
 	State     string    `json:"state"`
-	Risk      string    `json:"risk,omitempty"`
 	CreatedAt time.Time `json:"created_at"`
 }
 
@@ -57,7 +55,7 @@ func toPendingView(ctx context.Context, store database.Store, m database.Manifes
 	}
 
 	return PendingManifestView{
-		ID: m.ID, Server: name, Hash: m.Hash, Risk: m.RiskLevel,
+		ID: m.ID, Server: name, Hash: m.Hash,
 		Changes: changes, CreatedAt: m.CreatedAt,
 	}, nil
 }
@@ -68,6 +66,6 @@ func toManifestView(ctx context.Context, store database.Store, m *database.Manif
 		return ManifestView{}, err
 	}
 	return ManifestView{
-		ID: m.ID, Server: name, Hash: m.Hash, State: m.State, Risk: m.RiskLevel, CreatedAt: m.CreatedAt,
+		ID: m.ID, Server: name, Hash: m.Hash, State: m.State, CreatedAt: m.CreatedAt,
 	}, nil
 }

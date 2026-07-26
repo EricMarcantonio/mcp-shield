@@ -35,7 +35,6 @@ CREATE TABLE IF NOT EXISTS manifests (
   hash TEXT NOT NULL,
   canonical_json TEXT NOT NULL,
   state TEXT NOT NULL,
-  risk_level TEXT,
   diff_json TEXT,
   created_at DATETIME NOT NULL
 );
@@ -316,9 +315,9 @@ func listServers(ctx context.Context, e execer) ([]Server, error) {
 func insertManifest(ctx context.Context, e execer, m *ManifestRecord) (int64, error) {
 	now := time.Now().UTC()
 	res, err := e.ExecContext(ctx, `
-		INSERT INTO manifests (server_id, hash, canonical_json, state, risk_level, diff_json, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		m.ServerID, m.Hash, m.CanonicalJSON, m.State, nullIfEmpty(m.RiskLevel), nullIfEmpty(m.DiffJSON), now)
+		INSERT INTO manifests (server_id, hash, canonical_json, state, diff_json, created_at)
+		VALUES (?, ?, ?, ?, ?, ?)`,
+		m.ServerID, m.Hash, m.CanonicalJSON, m.State, nullIfEmpty(m.DiffJSON), now)
 	if err != nil {
 		return 0, fmt.Errorf("database: insert manifest: %w", err)
 	}
@@ -332,14 +331,14 @@ func insertManifest(ctx context.Context, e execer, m *ManifestRecord) (int64, er
 
 func getManifestByHash(ctx context.Context, e execer, serverID int64, hash string) (*ManifestRecord, error) {
 	row := e.QueryRowContext(ctx, `
-		SELECT id, server_id, hash, canonical_json, state, risk_level, diff_json, created_at
+		SELECT id, server_id, hash, canonical_json, state, diff_json, created_at
 		FROM manifests WHERE server_id = ? AND hash = ?`, serverID, hash)
 	return scanManifest(row)
 }
 
 func getManifestByID(ctx context.Context, e execer, id int64) (*ManifestRecord, error) {
 	row := e.QueryRowContext(ctx, `
-		SELECT id, server_id, hash, canonical_json, state, risk_level, diff_json, created_at
+		SELECT id, server_id, hash, canonical_json, state, diff_json, created_at
 		FROM manifests WHERE id = ?`, id)
 	// scanManifest already maps a missing row to ErrNotFound.
 	return scanManifest(row)
@@ -347,14 +346,14 @@ func getManifestByID(ctx context.Context, e execer, id int64) (*ManifestRecord, 
 
 func getApprovedManifest(ctx context.Context, e execer, serverID int64) (*ManifestRecord, error) {
 	row := e.QueryRowContext(ctx, `
-		SELECT id, server_id, hash, canonical_json, state, risk_level, diff_json, created_at
+		SELECT id, server_id, hash, canonical_json, state, diff_json, created_at
 		FROM manifests WHERE server_id = ? AND state = ?`, serverID, StateApproved)
 	return scanManifest(row)
 }
 
 func listPendingManifests(ctx context.Context, e execer) ([]ManifestRecord, error) {
 	rows, err := e.QueryContext(ctx, `
-		SELECT id, server_id, hash, canonical_json, state, risk_level, diff_json, created_at
+		SELECT id, server_id, hash, canonical_json, state, diff_json, created_at
 		FROM manifests WHERE state = ? ORDER BY created_at`, StatePending)
 	if err != nil {
 		return nil, fmt.Errorf("database: list pending manifests: %w", err)
@@ -437,14 +436,13 @@ func scanManifest(row *sql.Row) (*ManifestRecord, error) {
 
 func scanManifestRow(row scanner) (*ManifestRecord, error) {
 	var m ManifestRecord
-	var riskLevel, diffJSON sql.NullString
-	if err := row.Scan(&m.ID, &m.ServerID, &m.Hash, &m.CanonicalJSON, &m.State, &riskLevel, &diffJSON, &m.CreatedAt); err != nil {
+	var diffJSON sql.NullString
+	if err := row.Scan(&m.ID, &m.ServerID, &m.Hash, &m.CanonicalJSON, &m.State, &diffJSON, &m.CreatedAt); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, err
 		}
 		return nil, fmt.Errorf("database: scan manifest: %w", err)
 	}
-	m.RiskLevel = riskLevel.String
 	m.DiffJSON = diffJSON.String
 	return &m, nil
 }

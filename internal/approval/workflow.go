@@ -68,8 +68,8 @@ type CheckResult struct {
 //   - Otherwise (hash is PENDING/REJECTED/SUPERSEDED, or new)         ->
 //     only the subset unchanged from the current approved baseline is
 //     safe; new or changed items are withheld. A brand new manifest row
-//     is inserted (diffed + risk-classified) the first time a given hash
-//     is seen; a hash seen before just reuses its existing row/state.
+//     is inserted (diffed against the baseline) the first time a given
+//     hash is seen; a hash seen before just reuses its existing row/state.
 //   - failMode warn overrides withholding: everything is marked safe,
 //     Warn is set, but the manifest's real state is still recorded as-is.
 func (w *Workflow) CheckAndRecord(ctx context.Context, serverID int64, m *manifest.Manifest) (*CheckResult, error) {
@@ -131,7 +131,7 @@ func (w *Workflow) approvedBaseline(ctx context.Context, serverID int64) (*datab
 }
 
 // findOrInsertManifest returns the id and state for this hash, inserting a
-// new PENDING row (diffed and risk-classified) the first time the hash is
+// new PENDING row (diffed against the baseline) the first time the hash is
 // seen. A hash seen before reuses its existing row, so an operator's earlier
 // decision on it is never quietly reset by a reconnect.
 func (w *Workflow) findOrInsertManifest(ctx context.Context, serverID int64, hash string, canonical []byte, d *diff.Diff) (int64, string, error) {
@@ -143,7 +143,6 @@ func (w *Workflow) findOrInsertManifest(ctx context.Context, serverID int64, has
 		return 0, "", fmt.Errorf("approval: lookup manifest: %w", err)
 	}
 
-	risk, _ := diff.ClassifyRisk(d)
 	diffBytes, err := json.Marshal(d)
 	if err != nil {
 		return 0, "", fmt.Errorf("approval: marshal diff: %w", err)
@@ -153,7 +152,6 @@ func (w *Workflow) findOrInsertManifest(ctx context.Context, serverID int64, has
 		Hash:          hash,
 		CanonicalJSON: string(canonical),
 		State:         database.StatePending,
-		RiskLevel:     risk,
 		DiffJSON:      string(diffBytes),
 	})
 	if err != nil {

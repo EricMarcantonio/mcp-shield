@@ -74,7 +74,6 @@ type pendingRow struct {
 	ID        int64     `json:"id"`
 	Server    string    `json:"server"`
 	Hash      string    `json:"hash"`
-	Risk      string    `json:"risk"`
 	Changes   []string  `json:"changes"`
 	CreatedAt time.Time `json:"created_at"`
 }
@@ -89,11 +88,11 @@ func cliManifests() error {
 		return nil
 	}
 	tw := tabwriter.NewWriter(os.Stdout, 0, 2, 2, ' ', 0)
-	if _, err := fmt.Fprintln(tw, "ID\tSERVER\tRISK\tHASH\tCHANGES"); err != nil {
+	if _, err := fmt.Fprintln(tw, "ID\tSERVER\tHASH\tCHANGES"); err != nil {
 		return err
 	}
 	for _, r := range rows {
-		if _, err := fmt.Fprintf(tw, "%d\t%s\t%s\t%.12s\t%d change(s)\n", r.ID, r.Server, r.Risk, r.Hash, len(r.Changes)); err != nil {
+		if _, err := fmt.Fprintf(tw, "%d\t%s\t%.12s\t%d change(s)\n", r.ID, r.Server, r.Hash, len(r.Changes)); err != nil {
 			return err
 		}
 	}

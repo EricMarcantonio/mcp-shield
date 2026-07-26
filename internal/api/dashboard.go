@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"html/template"
 	"log/slog"
 	"net/http"
@@ -128,8 +129,15 @@ func (s *Server) handleDashboardServers(w http.ResponseWriter, r *http.Request) 
 	rows := make([]dashboardServersRow, 0, len(servers))
 	for _, srv := range servers {
 		hash := "(none approved)"
-		if approved, err := s.store.GetApprovedManifest(ctx, srv.ID); err == nil && approved != nil {
+		approved, err := s.store.GetApprovedManifest(ctx, srv.ID)
+		switch {
+		case err == nil:
 			hash = approved.Hash
+		case !errors.Is(err, database.ErrNotFound):
+			// A server with no approved baseline is normal; a lookup that
+			// actually failed is not, and must not read as "none approved".
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
 		}
 		rows = append(rows, dashboardServersRow{Server: srv, ApprovedHash: hash})
 	}

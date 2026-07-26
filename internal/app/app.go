@@ -6,6 +6,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -145,15 +146,13 @@ type gateAdapter struct {
 }
 
 func (g *gateAdapter) CheckAndRecord(ctx context.Context, serverName string, tools []mcp.Tool, prompts []mcp.Prompt, resources []mcp.Resource) (*mcp.GateDecision, error) {
+	// A configured server is registered lazily, on its first connect.
 	srv, err := g.store.GetServerByName(ctx, serverName)
+	if errors.Is(err, database.ErrNotFound) {
+		srv, err = g.store.CreateServer(ctx, serverName, "")
+	}
 	if err != nil {
 		return nil, err
-	}
-	if srv == nil {
-		srv, err = g.store.CreateServer(ctx, serverName, "")
-		if err != nil {
-			return nil, err
-		}
 	}
 
 	// A capability set that violates the protocol's unique-identity rule is

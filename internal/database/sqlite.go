@@ -15,8 +15,10 @@ import (
 	_ "modernc.org/sqlite" // registers the "sqlite" database/sql driver
 )
 
-// ErrNotFound is returned by lookups that require the row to exist
-// (GetManifestByID) when it does not.
+// ErrNotFound is returned by every Store lookup when the row does not
+// exist. There is exactly one absence convention: no lookup returns a nil
+// object with a nil error, so callers use errors.Is rather than a nil check
+// that is easy to forget and fails as a nil dereference when they do.
 var ErrNotFound = errors.New("database: not found")
 
 const schema = `
@@ -52,7 +54,8 @@ CREATE INDEX IF NOT EXISTS idx_approvals_manifest ON approvals(manifest_id);
 `
 
 // Store is the persistence interface used by the approval workflow and API
-// layers. Note what is deliberately absent: there is no method that updates
+// layers. Lookups return ErrNotFound when the row does not exist; no method
+// returns a nil object with a nil error. Note what is deliberately absent: there is no method that updates
 // a manifest's hash or canonical_json after insert. UpdateManifestState is
 // the only mutation on an existing manifest row, so manifest content is
 // physically immutable once written, not just immutable by convention.
@@ -274,7 +277,7 @@ func getServerByName(ctx context.Context, e execer, name string) (*Server, error
 	var s Server
 	if err := row.Scan(&s.ID, &s.Name, &s.Endpoint, &s.CreatedAt); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return nil, nil
+			return nil, ErrNotFound
 		}
 		return nil, fmt.Errorf("database: get server by name: %w", err)
 	}
@@ -286,7 +289,7 @@ func getServerByID(ctx context.Context, e execer, id int64) (*Server, error) {
 	var s Server
 	if err := row.Scan(&s.ID, &s.Name, &s.Endpoint, &s.CreatedAt); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return nil, nil
+			return nil, ErrNotFound
 		}
 		return nil, fmt.Errorf("database: get server by id: %w", err)
 	}
@@ -338,14 +341,8 @@ func getManifestByID(ctx context.Context, e execer, id int64) (*ManifestRecord, 
 	row := e.QueryRowContext(ctx, `
 		SELECT id, server_id, hash, canonical_json, state, risk_level, diff_json, created_at
 		FROM manifests WHERE id = ?`, id)
-	m, err := scanManifest(row)
-	if err != nil {
-		return nil, err
-	}
-	if m == nil {
-		return nil, ErrNotFound
-	}
-	return m, nil
+	// scanManifest already maps a missing row to ErrNotFound.
+	return scanManifest(row)
 }
 
 func getApprovedManifest(ctx context.Context, e execer, serverID int64) (*ManifestRecord, error) {
@@ -433,7 +430,7 @@ type scanner interface {
 func scanManifest(row *sql.Row) (*ManifestRecord, error) {
 	m, err := scanManifestRow(row)
 	if errors.Is(err, sql.ErrNoRows) {
-		return nil, nil
+		return nil, ErrNotFound
 	}
 	return m, err
 }

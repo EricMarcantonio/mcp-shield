@@ -79,9 +79,14 @@ func (w *Workflow) CheckAndRecord(ctx context.Context, serverID int64, m *manife
 	}
 	hash := manifest.Hash(canonical)
 
+	// No approved baseline yet (first-ever connect) is an ordinary state,
+	// not a failure: everything in this manifest is then reported as added.
 	baseline, err := w.store.GetApprovedManifest(ctx, serverID)
-	if err != nil {
+	if err != nil && !errors.Is(err, database.ErrNotFound) {
 		return nil, fmt.Errorf("approval: lookup baseline: %w", err)
+	}
+	if errors.Is(err, database.ErrNotFound) {
+		baseline = nil
 	}
 
 	// Fast path: this exact snapshot is the approved baseline itself, so
@@ -107,9 +112,14 @@ func (w *Workflow) CheckAndRecord(ctx context.Context, serverID int64, m *manife
 	d := diff.Compare(baselineManifest, m)
 	safeTools, safePrompts, safeResources := unchangedSets(m, d)
 
+	// Not seen before is the common case on a capability change; it means
+	// this hash needs a new PENDING row rather than reusing an old decision.
 	existing, err := w.store.GetManifestByHash(ctx, serverID, hash)
-	if err != nil {
+	if err != nil && !errors.Is(err, database.ErrNotFound) {
 		return nil, fmt.Errorf("approval: lookup manifest: %w", err)
+	}
+	if errors.Is(err, database.ErrNotFound) {
+		existing = nil
 	}
 
 	var manifestID int64
@@ -233,9 +243,12 @@ func (w *Workflow) Approve(ctx context.Context, manifestID int64, username, reas
 			return fmt.Errorf("%w: manifest %d is %s", ErrNotPending, manifestID, rec.State)
 		}
 
-		if prior, err := tx.GetApprovedManifest(ctx, rec.ServerID); err != nil {
+		// Approving the very first manifest for a server supersedes nothing.
+		prior, err := tx.GetApprovedManifest(ctx, rec.ServerID)
+		if err != nil && !errors.Is(err, database.ErrNotFound) {
 			return err
-		} else if prior != nil {
+		}
+		if err == nil {
 			if err := tx.UpdateManifestState(ctx, prior.ID, database.StateSuperseded); err != nil {
 				return err
 			}

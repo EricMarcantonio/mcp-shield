@@ -42,9 +42,6 @@ th { color: #9aa4b2; font-weight: 600; font-size: 0.8rem; text-transform: upperc
   font-size: 0.75rem;
   font-weight: 700;
 }
-.badge.risk-HIGH, .risk-HIGH .badge { background: #451a1a; color: #ff8080; }
-.badge.risk-MEDIUM { background: #4a3a12; color: #ffcc66; }
-.badge.risk-LOW { background: #123a1f; color: #7be0a0; }
 .badge.state-APPROVED { background: #123a1f; color: #7be0a0; }
 .badge.state-PENDING { background: #4a3a12; color: #ffcc66; }
 .badge.state-REJECTED, .badge.state-SUPERSEDED { background: #451a1a; color: #ff8080; }

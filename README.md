@@ -11,21 +11,115 @@
 [![Go Reference](https://pkg.go.dev/badge/github.com/EricMarcantonio/mcp-shield.svg)](https://pkg.go.dev/github.com/EricMarcantonio/mcp-shield)
 [![License](https://img.shields.io/github/license/EricMarcantonio/mcp-shield)](LICENSE)
 
-## Why
+## Quickstart
+
+> [!NOTE]
+> **Not live yet.** `v0.1.0` hasn't been tagged, and this repository is
+> still private, so `go install` and `docker pull` below 404 today. The
+> commands are the real, permanent instructions — they start working the
+> moment the tag ships **and** the repo is public **and** (separately —
+> package visibility doesn't follow repo visibility) the ghcr package is
+> flipped to public. Until then, use "Build from source right now" below.
+
+### 1. Install (pick one)
+
+```sh
+# go install
+go install github.com/EricMarcantonio/mcp-shield/cmd/mcp-shield@latest
+
+# ...or download a release archive (linux/darwin/windows x amd64/arm64) from
+# https://github.com/EricMarcantonio/mcp-shield/releases and put the
+# `mcp-shield` binary on your $PATH.
+
+# ...or Docker
+docker pull ghcr.io/ericmarcantonio/mcp-shield:latest
+```
+
+### 2. Configure and run
+
+```sh
+mkdir -p config data
+cat > config/servers.json <<'EOF'
+[
+  {"name": "my-server", "command": "/path/to/your/mcp-server", "args": []}
+]
+EOF
+
+mcp-shield
+```
+
+...or with Docker:
+
+```sh
+docker run -p 8080:8080 -p 8081:8081 \
+  -v "$(pwd)/config:/config:ro" -v "$(pwd)/data:/data" \
+  -e CONFIG_PATH=/config/servers.json -e DATABASE_PATH=/data/mcp.db \
+  ghcr.io/ericmarcantonio/mcp-shield:latest
+```
+
+### 3. Approve the first connection
+
+Point an MCP-capable HTTP client at `http://localhost:8080/mcp/my-server`
+(see [Client compatibility](#client-compatibility) — HTTP JSON-RPC only,
+for now). First connection creates a PENDING manifest; since there's no
+approved baseline yet, `tools/list` comes back empty and any `tools/call`
+is blocked, until you review and approve it:
+
+```sh
+curl localhost:8081/api/manifests/pending
+curl -X POST localhost:8081/api/manifests/1/approve -d '{"username":"you","reason":"reviewed"}'
+```
+
+...or use the dashboard at `http://localhost:8081/`. The dashboard needs
+`web/dashboard/templates` on disk (`TEMPLATES_DIR`, default
+`web/dashboard/templates`, resolved relative to the working directory);
+release archives and the Docker image bundle it automatically, `go
+install` does not — with only `go install`, run `mcp-shield` from a
+directory containing that path, or set `TEMPLATES_DIR` explicitly, or
+skip the dashboard and use the JSON API and CLI above, which don't need it.
+
+> **Deployment warning:** the approval API/dashboard (`:8081`) has no
+> authentication. Bind it to localhost or a trusted network only — see
+> [SECURITY.md](SECURITY.md).
+
+### Build from source, right now
+
+The paths above aren't live yet (see the note above), but the gateway
+itself is fully working — this is the one that actually runs today:
+
+```sh
+git clone https://github.com/EricMarcantonio/mcp-shield.git
+cd mcp-shield
+make build   # -> bin/mcp-shield, bin/mcp-shield-testserver
+cp config/servers.example.json config/servers.json  # edit command/args for your real MCP server
+./bin/mcp-shield
+```
+
+...or via Docker Compose, which builds the image locally instead of
+pulling it:
+
+```sh
+cp config/servers.example.json config/servers.json
+make docker-build
+make docker-up
+```
+
+Then continue from step 3 above. For a guided walkthrough that edits a
+running server's tools and watches the gate react in real time, see
+[docs/manual-testing.md](docs/manual-testing.md).
+
+## What it does, and why
 
 An MCP server can change what it offers at any time — a compromised or
 updated upstream server could silently add a `delete_*`, `upload_*`, or
 `execute_*` tool and start receiving calls from a trusted AI client with no
 warning. mcp-shield closes that gap: every connection is fingerprinted into
-a canonical manifest, diffed against the last approved version, risk
-classified, and gated. New or changed capabilities are withheld until a
-human approves them — but withholding is scoped to what actually changed,
-not the whole server: tools that are byte-identical to the last approved
-version keep working even while a new or modified tool sits pending or
-gets rejected. A rejected change never brings down the tools you already
-trusted.
-
-## How it works
+a canonical manifest and diffed against the last approved version. New or
+changed capabilities are withheld until a human approves them — but
+withholding is scoped to what actually changed, not the whole server: tools
+that are byte-identical to the last approved version keep working even
+while a new or modified tool sits pending or gets rejected. A rejected
+change never brings down the tools you already trusted.
 
 ```mermaid
 flowchart LR
@@ -47,77 +141,9 @@ flowchart LR
   client — there's no "already approved this session" shortcut a server
   could exploit by changing behavior mid-session.
 
-Full gate semantics, the structural guarantees behind manifest immutability
-and fail-closed behavior, and the risk-classification rules are in
+Full gate semantics — the exact partial-allow rules, and the structural
+guarantees behind manifest immutability and fail-closed behavior — are in
 [docs/security-model.md](docs/security-model.md).
-
-## Install
-
-There are no tagged releases yet, so source is the only path today:
-
-```sh
-git clone https://github.com/EricMarcantonio/mcp-shield.git
-cd mcp-shield
-make build   # -> bin/mcp-shield, bin/mcp-shield-testserver
-```
-
-Once the first tag (`v0.1.0`) is pushed, `.github/workflows/release.yml`
-(GoReleaser) will publish, for every `vX.Y.Z` tag:
-
-- Cross-compiled `mcp-shield` archives for linux/darwin/windows ×
-  amd64/arm64, plus checksums, attached to a GitHub Release.
-- A multi-arch (amd64+arm64) Docker image at
-  `ghcr.io/ericmarcantonio/mcp-shield:X.Y.Z` (and `:latest`).
-
-**Neither of those is usable yet, and this section will keep saying so
-until both conditions below are true — do not treat the commands below as
-currently working:**
-
-```sh
-# Will work once the repo is public AND a tag has shipped. Today it 404s.
-go install github.com/EricMarcantonio/mcp-shield/cmd/mcp-shield@latest
-
-# Will work once the repo is public, a tag has shipped, AND the ghcr
-# package's own visibility has been separately flipped to public (package
-# visibility does not follow repo visibility automatically). Today: no tag,
-# no public package — this will fail.
-docker pull ghcr.io/ericmarcantonio/mcp-shield:latest
-```
-
-This repository is currently **private**. That alone blocks anonymous
-`go install`, blocks anonymous `docker pull` against ghcr, and is why the
-badges at the top of this file won't render for anyone without repo
-access. None of that is a release-engineering bug — it's a consequence of
-visibility, and it resolves the moment the repo (and separately, the ghcr
-package) go public.
-
-## Quickstart (Docker)
-
-```sh
-cp config/servers.example.json config/servers.json  # edit command/args for your real MCP server
-make docker-build
-make docker-up
-```
-
-Point an MCP-capable HTTP client at `http://localhost:8080/mcp/<name>`
-(the `name` from `config/servers.json`). First connection creates a
-PENDING manifest; since there's no approved baseline yet, `tools/list`
-comes back empty and any `tools/call` is blocked. Review and approve it:
-
-```sh
-curl localhost:8081/api/manifests/pending
-curl -X POST localhost:8081/api/manifests/1/approve -d '{"username":"you","reason":"reviewed"}'
-```
-
-`username` is required. The approvals table is the record of who authorized
-a capability change, so a decision the gateway cannot attribute is rejected
-with a 400 rather than recorded under an identity nobody supplied.
-
-...or use the dashboard at `http://localhost:8081/`.
-
-For a guided walkthrough that edits a running server's tools and watches
-the gate react in real time, see
-[docs/manual-testing.md](docs/manual-testing.md).
 
 ## Configuration
 
@@ -131,20 +157,6 @@ the gate react in real time, see
 | `TEMPLATES_DIR` | `web/dashboard/templates` | Dashboard templates |
 | `MCP_SHIELD_API` | `http://localhost:8081` | Target API for the `mcp-shield` CLI |
 
-> **Deployment warning:** the approval API/dashboard (`:8081`) has no
-> authentication. Bind it to localhost or a trusted network only — see
-> [SECURITY.md](SECURITY.md).
-
-## Risk classification
-
-Every diff against the last approved manifest is classified HIGH (a new
-tool's name matches a blunt, intentional substring list —
-`delete`/`upload`/`execute`/`shell`/`file`/`write`/`admin`/`credential` —
-false positives like `filesystem_status` are expected; a human makes the
-final call), MEDIUM (a tool's input schema changed), or LOW (description-only
-or no risk-relevant change). Full precedence rules:
-[docs/security-model.md](docs/security-model.md#risk-classification).
-
 ## CLI
 
 ```sh
@@ -156,6 +168,14 @@ mcp-shield diff <id>
 ```
 
 Talks to `$MCP_SHIELD_API` (default `http://localhost:8081`).
+
+`cmd/mcp-shield-testserver` is a fake MCP server with three tool sets, used
+for manual and automated testing of the approval pipeline — see
+[docs/manual-testing.md](docs/manual-testing.md):
+
+- `-version v1`: `calendar_read`, `calendar_create`
+- `-version v2`: adds `upload_attachment`
+- `-version v3`: adds `delete_calendar`, `execute_command`
 
 ## Client compatibility
 
@@ -179,15 +199,8 @@ make build            # bin/mcp-shield, bin/mcp-shield-testserver
 make test-unit
 make test-integration  # requires `make build` first
 make test              # both
-make lint               # golangci-lint
+make lint              # golangci-lint
 ```
-
-`cmd/mcp-shield-testserver` is a fake MCP server with three tool sets, used
-for manual and automated testing of the approval pipeline:
-
-- `-version v1`: `calendar_read`, `calendar_create` (LOW risk)
-- `-version v2`: adds `upload_attachment` (HIGH risk — matches "upload")
-- `-version v3`: adds `delete_calendar`, `execute_command` (HIGH risk)
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for setup, ground rules, and PR
 expectations.

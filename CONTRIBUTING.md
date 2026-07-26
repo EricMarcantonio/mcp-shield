@@ -24,8 +24,8 @@ Run `make help` to see all targets.
 
 - **New code needs tests.** Table-driven where there are multiple cases.
 - **Changes to gate semantics** (anything in `internal/approval`,
-  `internal/diff`'s risk classification, or the blocking behavior in
-  `internal/mcp`) need an issue discussing the design *before* a PR.
+  `internal/diff`, or the blocking behavior in `internal/mcp`) need an
+  issue discussing the design *before* a PR.
 - **No new runtime dependencies** without prior discussion — the project
   deliberately has one (`modernc.org/sqlite`).
 - Run `make lint test` before pushing; CI runs the same targets.

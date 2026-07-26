@@ -102,6 +102,11 @@ jobs:
     needs: goreleaser
     runs-on: ubuntu-latest
     permissions:
+      # A job-level permissions block REPLACES the workflow-level one rather
+      # than extending it, so contents:read has to be restated here or
+      # actions/checkout cannot clone this repository while it is private
+      # (it fails with a misleading "Repository not found").
+      contents: read # clone the repo to package the chart
       packages: write # push the chart OCI artifact to ghcr.io
       id-token: write # OIDC token used to sign the chart's provenance attestation
       attestations: write # record the chart's SLSA provenance attestation

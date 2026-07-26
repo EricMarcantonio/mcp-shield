@@ -29,37 +29,6 @@ type ManifestView struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
-func summarizeChanges(d *diff.Diff) []string {
-	var out []string
-	for _, name := range d.AddedTools {
-		out = append(out, "Added tool: "+name)
-	}
-	for _, name := range d.RemovedTools {
-		out = append(out, "Removed tool: "+name)
-	}
-	for _, tc := range d.ChangedTools {
-		switch {
-		case tc.SchemaChanged:
-			out = append(out, "Schema changed: "+tc.Name)
-		case tc.DescriptionChanged:
-			out = append(out, "Description changed: "+tc.Name)
-		}
-	}
-	for _, name := range d.AddedPrompts {
-		out = append(out, "Added prompt: "+name)
-	}
-	for _, name := range d.RemovedPrompts {
-		out = append(out, "Removed prompt: "+name)
-	}
-	for _, uri := range d.AddedResources {
-		out = append(out, "Added resource: "+uri)
-	}
-	for _, uri := range d.RemovedResources {
-		out = append(out, "Removed resource: "+uri)
-	}
-	return out
-}
-
 func toPendingView(ctx context.Context, store database.Store, m database.ManifestRecord) (PendingManifestView, error) {
 	srv, err := store.GetServerByID(ctx, m.ServerID)
 	if err != nil {
@@ -74,7 +43,7 @@ func toPendingView(ctx context.Context, store database.Store, m database.Manifes
 	if m.DiffJSON != "" {
 		var d diff.Diff
 		if err := json.Unmarshal([]byte(m.DiffJSON), &d); err == nil {
-			changes = summarizeChanges(&d)
+			changes = diff.Summarize(&d)
 		}
 	}
 

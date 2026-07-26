@@ -15,13 +15,16 @@ import (
 	"github.com/EricMarcantonio/mcp-shield/internal/mcp"
 )
 
-func newTestServer(t *testing.T) (*Server, database.Store, *approval.Workflow, int64) {
+// newTestServer's database.Store return is unused by every current caller
+// (unparam flags this) but is kept as test infrastructure for Phase 4 tests
+// that need direct store access (e.g. dashboard/gate-adapter tests).
+func newTestServer(t *testing.T) (*Server, database.Store, *approval.Workflow, int64) { //nolint:unparam // store return kept for Phase 4 tests that need direct store access
 	t.Helper()
 	store, err := database.Open(filepath.Join(t.TempDir(), "test.db"))
 	if err != nil {
 		t.Fatalf("open db: %v", err)
 	}
-	t.Cleanup(func() { store.Close() })
+	t.Cleanup(func() { _ = store.Close() })
 
 	srv, err := store.CreateServer(context.Background(), "calendar", "")
 	if err != nil {

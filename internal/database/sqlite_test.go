@@ -2,6 +2,7 @@ package database
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"testing"
 )
@@ -13,7 +14,7 @@ func openTestStore(t *testing.T) *SQLiteStore {
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
-	t.Cleanup(func() { store.Close() })
+	t.Cleanup(func() { _ = store.Close() })
 	return store
 }
 
@@ -101,7 +102,7 @@ func TestUpdateManifestStateOnlyTouchesState(t *testing.T) {
 func TestUpdateManifestStateNotFound(t *testing.T) {
 	ctx := context.Background()
 	store := openTestStore(t)
-	if err := store.UpdateManifestState(ctx, 999, StateApproved); err != ErrNotFound {
+	if err := store.UpdateManifestState(ctx, 999, StateApproved); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("expected ErrNotFound, got %v", err)
 	}
 }
@@ -155,7 +156,7 @@ func TestWithTxRollsBackOnError(t *testing.T) {
 		}
 		return sentinel
 	})
-	if err != sentinel {
+	if !errors.Is(err, sentinel) {
 		t.Fatalf("expected sentinel error, got %v", err)
 	}
 

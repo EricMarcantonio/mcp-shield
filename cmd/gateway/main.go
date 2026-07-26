@@ -80,7 +80,7 @@ func runDaemon() error {
 }
 
 func loadServerConfig(path string) ([]mcp.ServerConfig, error) {
-	b, err := os.ReadFile(path)
+	b, err := os.ReadFile(path) //nolint:gosec // G304: path is the operator-supplied --config flag, not attacker input
 	if os.IsNotExist(err) {
 		slog.Warn("no server config found; gateway will proxy no servers", "path", path)
 		return nil, nil

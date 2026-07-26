@@ -46,7 +46,7 @@ func (t *StdioTransport) Start(ctx context.Context) error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
-	cmd := exec.CommandContext(ctx, t.cmdPath, t.args...)
+	cmd := exec.CommandContext(ctx, t.cmdPath, t.args...) //nolint:gosec // G204: launching the operator-configured upstream MCP server is this transport's purpose
 	if len(t.env) > 0 {
 		cmd.Env = append(cmd.Environ(), t.env...)
 	}

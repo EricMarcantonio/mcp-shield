@@ -17,18 +17,20 @@ type fakeUpstream struct {
 	resources []Resource
 }
 
-func (f *fakeUpstream) Initialize(ctx context.Context) (*InitializeResult, error) {
+func (f *fakeUpstream) Initialize(_ context.Context) (*InitializeResult, error) {
 	return &InitializeResult{ProtocolVersion: "2024-11-05"}, nil
 }
-func (f *fakeUpstream) ListTools(ctx context.Context) ([]Tool, error)     { return f.tools, nil }
-func (f *fakeUpstream) ListPrompts(ctx context.Context) ([]Prompt, error) { return f.prompts, nil }
-func (f *fakeUpstream) ListResources(ctx context.Context) ([]Resource, error) {
+func (f *fakeUpstream) ListTools(_ context.Context) ([]Tool, error)     { return f.tools, nil }
+func (f *fakeUpstream) ListPrompts(_ context.Context) ([]Prompt, error) { return f.prompts, nil }
+func (f *fakeUpstream) ListResources(_ context.Context) ([]Resource, error) {
 	return f.resources, nil
 }
-func (f *fakeUpstream) CallTool(ctx context.Context, name string, args json.RawMessage) (*CallToolResult, error) {
+
+func (f *fakeUpstream) CallTool(_ context.Context, name string, _ json.RawMessage) (*CallToolResult, error) {
 	return &CallToolResult{Content: []ContentBlock{{Type: "text", Text: "ok: " + name}}}, nil
 }
-func (f *fakeUpstream) Call(ctx context.Context, method string, params any) (*Response, error) {
+
+func (f *fakeUpstream) Call(_ context.Context, _ string, _ any) (*Response, error) {
 	return &Response{JSONRPC: JSONRPCVersion, Result: json.RawMessage(`{}`)}, nil
 }
 func (f *fakeUpstream) Close() error { return nil }
@@ -40,7 +42,7 @@ type fakeGate struct {
 	err      error
 }
 
-func (g *fakeGate) CheckAndRecord(ctx context.Context, serverName string, tools []Tool, prompts []Prompt, resources []Resource) (*GateDecision, error) {
+func (g *fakeGate) CheckAndRecord(_ context.Context, _ string, _ []Tool, _ []Prompt, _ []Resource) (*GateDecision, error) {
 	return g.decision, g.err
 }
 
@@ -50,7 +52,7 @@ func newTestHandler(t *testing.T, up upstream, gate Gate) *DownstreamHandler {
 	if err != nil {
 		t.Fatalf("new handler: %v", err)
 	}
-	h.servers["cal"].newClient = func(ctx context.Context, cfg ServerConfig) (upstream, error) { return up, nil }
+	h.servers["cal"].newClient = func(_ context.Context, _ ServerConfig) (upstream, error) { return up, nil }
 	return h
 }
 
@@ -249,7 +251,7 @@ func TestEnsureStartedNeverRecoversDeadUpstream(t *testing.T) {
 	first := &fakeUpstream{}
 	session := &serverSession{
 		cfg:       ServerConfig{Name: "cal"},
-		newClient: func(ctx context.Context, cfg ServerConfig) (upstream, error) { return first, nil },
+		newClient: func(_ context.Context, _ ServerConfig) (upstream, error) { return first, nil },
 	}
 
 	got, err := session.ensureStarted(context.Background())
@@ -264,7 +266,7 @@ func TestEnsureStartedNeverRecoversDeadUpstream(t *testing.T) {
 	// being available: swap in a factory that would return a different,
 	// healthy client.
 	second := &fakeUpstream{}
-	session.newClient = func(ctx context.Context, cfg ServerConfig) (upstream, error) { return second, nil }
+	session.newClient = func(_ context.Context, _ ServerConfig) (upstream, error) { return second, nil }
 
 	got, err = session.ensureStarted(context.Background())
 	if err != nil {

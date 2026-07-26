@@ -22,7 +22,7 @@ func TestGateAdapterCreatesServerOnFirstSight(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open db: %v", err)
 	}
-	t.Cleanup(func() { store.Close() })
+	t.Cleanup(func() { _ = store.Close() })
 
 	workflow := approval.New(store, approval.FailModeBlock)
 	gate := &gateAdapter{store: store, workflow: workflow}

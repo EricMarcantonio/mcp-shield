@@ -29,7 +29,7 @@ func newDashboardTestServer(t *testing.T, templatesDir string) (*Server, int64) 
 	if err != nil {
 		t.Fatalf("open db: %v", err)
 	}
-	t.Cleanup(func() { store.Close() })
+	t.Cleanup(func() { _ = store.Close() })
 
 	srv, err := store.CreateServer(context.Background(), "calendar", "")
 	if err != nil {

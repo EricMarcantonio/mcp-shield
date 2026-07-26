@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"runtime"
 	"strings"
 	"testing"
@@ -21,11 +22,12 @@ type fakeTransport struct {
 func newFakeTransport() *fakeTransport {
 	return &fakeTransport{frames: make(chan []byte, 16), errs: make(chan error, 1), sent: make(chan []byte, 16)}
 }
-func (t *fakeTransport) Start(ctx context.Context) error { return nil }
-func (t *fakeTransport) Send(msg []byte) error           { t.sent <- msg; return nil }
+func (t *fakeTransport) Start(_ context.Context) error { return nil }
+func (t *fakeTransport) Send(msg []byte) error         { t.sent <- msg; return nil }
 func (t *fakeTransport) Recv() (<-chan []byte, <-chan error) {
 	return t.frames, t.errs
 }
+
 func (t *fakeTransport) Close() error {
 	if t.onClose != nil {
 		t.onClose()
@@ -113,7 +115,7 @@ func TestCallContextCancelUnblocks(t *testing.T) {
 
 	select {
 	case <-done:
-		if callErr != context.Canceled {
+		if !errors.Is(callErr, context.Canceled) {
 			t.Fatalf("expected context.Canceled, got %v", callErr)
 		}
 	case <-time.After(2 * time.Second):

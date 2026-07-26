@@ -18,7 +18,7 @@ func TestStdioTransportRoundTrip(t *testing.T) {
 	if err := tr.Start(context.Background()); err != nil {
 		t.Fatalf("start: %v", err)
 	}
-	defer tr.Close()
+	defer func() { _ = tr.Close() }()
 	if err := tr.Send([]byte(`{"jsonrpc":"2.0","id":1,"method":"ping"}`)); err != nil {
 		t.Fatalf("send: %v", err)
 	}
@@ -58,7 +58,7 @@ func TestStdioTransportCloseDoesNotBlock(t *testing.T) {
 	}
 	done := make(chan struct{})
 	go func() {
-		tr.Close()
+		_ = tr.Close()
 		close(done)
 	}()
 	select {

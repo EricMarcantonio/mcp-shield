@@ -1,9 +1,13 @@
 # mcp-shield
 
-A Zero Trust gateway for the Model Context Protocol (MCP). It sits between
-an AI client and an upstream MCP server, fingerprints the server's
-advertised tools/prompts/resources, and blocks any capability change until
-a human explicitly approves it.
+> A Zero Trust gateway for the Model Context Protocol. Every tool an MCP
+> server advertises is fingerprinted, diffed, and held for human approval
+> before an AI client can see or call it.
+
+[![CI](https://github.com/EricMarcantonio/mcp-shield/actions/workflows/ci.yml/badge.svg)](https://github.com/EricMarcantonio/mcp-shield/actions/workflows/ci.yml)
+[![Go Report Card](https://goreportcard.com/badge/github.com/EricMarcantonio/mcp-shield)](https://goreportcard.com/report/github.com/EricMarcantonio/mcp-shield)
+[![Go Reference](https://pkg.go.dev/badge/github.com/EricMarcantonio/mcp-shield.svg)](https://pkg.go.dev/github.com/EricMarcantonio/mcp-shield)
+[![License](https://img.shields.io/github/license/EricMarcantonio/mcp-shield)](LICENSE)
 
 ## Why
 
@@ -19,28 +23,21 @@ version keep working even while a new or modified tool sits pending or
 gets rejected. A rejected change never brings down the tools you already
 trusted.
 
-## Architecture
+## How it works
 
-```
-Client (HTTP JSON-RPC) --> :8080 mcp-shield proxy --> stdio --> upstream MCP server
-                                     |
-                                     v
-                          manifest build + canonicalize + hash
-                                     |
-                                     v
-                              SQLite (servers, manifests, approvals)
-                                     |
-                                     v
-                    :8081 approval API + dashboard (approve/reject)
+```mermaid
+flowchart LR
+    C[AI client] -- "HTTP JSON-RPC :8080" --> G[mcp-shield]
+    G -- stdio --> U[upstream MCP server]
+    G --> M["canonicalize + SHA-256 manifest"]
+    M --> D[(SQLite)]
+    D --> A["approval API + dashboard :8081"]
+    A -- "approve / reject" --> D
 ```
 
 - **Client-facing (`:8080`)**: `POST /mcp/{server}`, one JSON-RPC request
-  per HTTP call. Known limitation: this does not work with Claude
-  Desktop's classic stdio-spawned-server config, only with clients that
-  can point at a remote/HTTP MCP endpoint. A stdio-shim for that case is a
-  documented future-extension seam (`internal/mcp.Transport`), not built
-  in this MVP.
-- **Upstream-facing**: stdio subprocess — the gateway spawns the real MCP
+  per HTTP call.
+- **Upstream-facing**: stdio subprocess — mcp-shield spawns the real MCP
   server and speaks JSON-RPC over its stdin/stdout.
 - **Every** intercepted call (`initialize`, `tools/list`, `prompts/list`,
   `resources/list`, `tools/call`) re-fetches the upstream server's current
@@ -48,52 +45,24 @@ Client (HTTP JSON-RPC) --> :8080 mcp-shield proxy --> stdio --> upstream MCP ser
   client — there's no "already approved this session" shortcut a server
   could exploit by changing behavior mid-session.
 
-## Partial allow, not all-or-nothing
+Full gate semantics, the structural guarantees behind manifest immutability
+and fail-closed behavior, and the risk-classification rules are in
+[docs/security-model.md](docs/security-model.md).
 
-The gate's decision (`approval.CheckResult` / `mcp.GateDecision`) is a
-per-item set of safe tool/prompt/resource names, not a single allow/deny
-bool:
+## Install
 
-- A tool identical to the current approved baseline is always in the safe
-  set and keeps flowing through `tools/list` and `tools/call`, regardless
-  of what else on the server is pending or rejected.
-- A new or changed tool is excluded from `tools/list` (it's silently
-  omitted, not an error) and `tools/call` on it returns a JSON-RPC error
-  naming that specific tool and the manifest state it belongs to.
-- A server with **no** approved baseline at all (first-ever connect) has
-  an empty safe set — fail closed until at least one manifest is approved.
-- `initialize` is never gated (it reveals no capability data, so blocking
-  it would just break the handshake for no security benefit).
-- Passthrough methods mcp-shield doesn't specifically parse
-  (`resources/read`, `prompts/get`, ...) can't be filtered item by item,
-  so they fall back to a coarse check: forwarded only once the server has
-  *some* approved baseline, blocked entirely otherwise.
+There are no tagged releases yet, so source is the only path today:
 
-## Manifest immutability & fail-closed, enforced structurally
+```sh
+git clone https://github.com/EricMarcantonio/mcp-shield.git
+cd mcp-shield
+make build   # -> bin/mcp-shield, bin/mcp-shield-testserver
+```
 
-- `database.Store` has exactly one write path for an existing manifest
-  row — `UpdateManifestState` — which only ever does
-  `UPDATE manifests SET state = ? WHERE id = ?`. There is no method to
-  mutate `hash` or `canonical_json` after insert.
-- `approval.Workflow` only allows the transitions
-  `PENDING→APPROVED`, `PENDING→REJECTED`, `APPROVED→SUPERSEDED`; anything
-  else returns `ErrInvalidTransition`/`ErrNotPending` before it reaches SQL.
-- Default `FAIL_MODE=block`: anything not in the approved baseline is
-  withheld (see "Partial allow" above — this is per-item, not a whole-server
-  block). `FAIL_MODE=warn` allows everything through regardless of state,
-  for initial rollout observation; it is never the production default.
-
-## Risk classification
-
-Given a diff against the last approved manifest, in precedence order:
-
-1. **HIGH** — any newly added tool's name contains (case-insensitive)
-   `delete`, `upload`, `execute`, `shell`, `file`, `write`, `admin`, or
-   `credential`. This is a blunt substring match by design — it will also
-   flag a benign tool like `filesystem_status` (contains "file"). That's
-   intentional: a human still makes the final call.
-2. **MEDIUM** — a tool's `input_schema` changed.
-3. **LOW** — only a tool's description changed (or nothing risk-relevant).
+`go install github.com/EricMarcantonio/mcp-shield/cmd/mcp-shield@latest`
+and prebuilt release binaries will work once the project cuts its first
+tagged release (tracked in `CHANGELOG.md`); until then that path doesn't
+resolve.
 
 ## Quickstart (Docker)
 
@@ -115,72 +84,35 @@ curl -X POST localhost:8081/api/manifests/1/approve -d '{"username":"you","reaso
 
 ...or use the dashboard at `http://localhost:8081/`.
 
-## Manual testing (Docker)
+For a guided walkthrough that edits a running server's tools and watches
+the gate react in real time, see
+[docs/manual-testing.md](docs/manual-testing.md).
 
-Full setup:
+## Configuration
 
-```sh
-cp config/servers.example.json config/servers.json
-cp config/testserver-tools.example.json config/testserver-tools.json
-make docker-build
-make docker-up
-```
+| Env var | Default | Purpose |
+|---|---|---|
+| `CONFIG_PATH` | `config/servers.json` | Upstream server definitions (command/args/env) |
+| `DATABASE_PATH` | `data/mcp.db` | SQLite location |
+| `PROXY_ADDR` | `:8080` | Client-facing listener |
+| `API_ADDR` | `:8081` | Approval API + dashboard listener |
+| `FAIL_MODE` | `block` | `block` (fail closed) or `warn` (observe only, never for production) |
+| `TEMPLATES_DIR` | `web/dashboard/templates` | Dashboard templates |
+| `MCP_SHIELD_API` | `http://localhost:8081` | Target API for the `mcp-shield` CLI |
 
-`config/servers.json` points the gateway at the fake test server with
-`TOOLS_FILE=/config/testserver-tools.json` — that file is bind-mounted
-(`./config:/config:ro`) so edits on your host take effect on the *next*
-request, no restart needed (the test server re-reads and re-parses the
-file on every `tools/list` call).
+> **Deployment warning:** the approval API/dashboard (`:8081`) has no
+> authentication. Bind it to localhost or a trusted network only — see
+> [SECURITY.md](SECURITY.md).
 
-Trigger a connect — first-ever connect has no approved baseline, so
-`tools/list` comes back with an empty `tools` array (not an error) and
-creates a PENDING manifest:
+## Risk classification
 
-```sh
-curl -s -X POST localhost:8080/mcp/calendar -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
-curl -s localhost:8081/api/manifests/pending
-```
-
-Approve it so a baseline exists — `tools/list` now returns both tools:
-
-```sh
-curl -s -X POST localhost:8081/api/manifests/1/approve -d '{"username":"you"}'
-curl -s -X POST localhost:8080/mcp/calendar -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
-```
-
-Now edit `config/testserver-tools.json` by hand — this is the "modify the
-schema and watch the proxy react" step. Try each of these and re-run the
-`tools/list` curl above after each edit. Watch two things: a fresh PENDING
-manifest appears in `/api/manifests/pending`, **and** `tools/list` still
-returns the tools you didn't touch — only the new/changed one drops out:
-
-- **Add a field to an existing tool's `inputSchema`** (e.g. add
-  `"notes": {"type": "string"}` under `calendar_create`'s `properties`) →
-  risk `MEDIUM`; `calendar_create` itself drops out of `tools/list` until
-  approved, `calendar_read` is unaffected.
-- **Change a tool's `description` only** → risk `LOW`, same partial effect.
-- **Add a new tool object** named e.g. `upload_receipt` or
-  `delete_event` → risk `HIGH` (matches the `upload`/`delete` keyword
-  list); the two existing tools keep working, only the new one is
-  withheld. Confirm with `tools/call`:
-  ```sh
-  curl -s -X POST localhost:8080/mcp/calendar -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"calendar_read"}}'   # succeeds
-  curl -s -X POST localhost:8080/mcp/calendar -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"upload_receipt"}}'  # blocked
-  ```
-  Reject it (`curl -X POST localhost:8081/api/manifests/{id}/reject -d '{"username":"you"}'`)
-  and re-run both calls — `calendar_read` still works, `upload_receipt`
-  still blocked. That's the point: a rejected change never takes down
-  what you already approved.
-- **Remove a tool entirely** from the array → shows up in `removed_tools`
-  in the diff (`curl localhost:8081/api/manifests/{id}/diff`); it just
-  stops appearing in `tools/list` since the upstream server no longer
-  offers it — nothing to approve or reject.
-
-You can also drive this from the dashboard at `http://localhost:8081/`
-instead of curl — approve/reject buttons are right there next to the diff.
-
-To reset and start clean: `make docker-down`, delete `data/mcp.db*`,
-`make docker-up` again.
+Every diff against the last approved manifest is classified HIGH (a new
+tool's name matches a blunt, intentional substring list —
+`delete`/`upload`/`execute`/`shell`/`file`/`write`/`admin`/`credential` —
+false positives like `filesystem_status` are expected; a human makes the
+final call), MEDIUM (a tool's input schema changed), or LOW (description-only
+or no risk-relevant change). Full precedence rules:
+[docs/security-model.md](docs/security-model.md#risk-classification).
 
 ## CLI
 
@@ -194,27 +126,52 @@ mcp-shield diff <id>
 
 Talks to `$MCP_SHIELD_API` (default `http://localhost:8081`).
 
+## Client compatibility
+
+Works today: any client that can send a JSON-RPC request as an HTTP POST
+to `/mcp/{server}` — this is not yet the spec's Streamable HTTP transport,
+just a plain HTTP wrapper.
+
+Not yet supported: Claude Desktop's classic stdio-spawned-server config,
+or any other client that only knows how to launch a subprocess and speak
+JSON-RPC over its stdin/stdout. A stdio shim to bridge that case is a
+documented future-extension seam (`internal/mcp.Transport`) and an open
+design question — transport strategy, decision D3 in
+[the design doc](docs/superpowers/specs/2026-07-25-oss-hardening-design.md#design-question-b--upstream--transport-strategy-decision-d3)
+— it is **not built** in the current version. There is no
+`mcp-shield connect` command.
+
 ## Development
 
 ```sh
-make build          # bin/mcp-shield, bin/mcp-shield-testserver
+make build            # bin/mcp-shield, bin/mcp-shield-testserver
 make test-unit
-make test-integration   # requires `make build` first
-make test            # both
-make lint             # gofmt -l + go vet
+make test-integration  # requires `make build` first
+make test              # both
+make lint               # golangci-lint
 ```
 
-`cmd/server` is a fake MCP server with three tool sets, used for manual
-and automated testing of the approval pipeline:
+`cmd/mcp-shield-testserver` is a fake MCP server with three tool sets, used
+for manual and automated testing of the approval pipeline:
 
 - `-version v1`: `calendar_read`, `calendar_create` (LOW risk)
 - `-version v2`: adds `upload_attachment` (HIGH risk — matches "upload")
 - `-version v3`: adds `delete_calendar`, `execute_command` (HIGH risk)
 
+See [CONTRIBUTING.md](CONTRIBUTING.md) for setup, ground rules, and PR
+expectations.
+
+## Versioning & stability
+
+SemVer, currently 0.x: interfaces may change between minor versions
+without notice.
+
 ## Explicitly out of scope for this MVP
 
 Kubernetes deployment, a distributed database, advanced sandboxing, eBPF,
-and runtime syscall monitoring. Left as seams for later, not built:
+runtime syscall monitoring, notifications (planned, not built — see
+[decision D2 in the design doc](docs/superpowers/specs/2026-07-25-oss-hardening-design.md#design-question-a--notifications-decision-d2)),
+and the stdio shim mentioned above. Left as seams for later, not built:
 - `database.Store` is an interface — a Postgres backend can implement it
   without touching `approval`/`api`/`mcp`.
 - `mcp.Transport` is an interface — an HTTP/SSE transport or a
@@ -224,3 +181,12 @@ and runtime syscall monitoring. Left as seams for later, not built:
 - OAuth, network policy enforcement, and runtime sandboxing are not
   addressed; `config/servers.json`'s per-server `env` is the noted future
   hook for secrets-manager-backed credential injection instead of plaintext.
+
+## Security
+
+See [SECURITY.md](SECURITY.md) for the vulnerability reporting process and
+what counts as a security bug here.
+
+## License
+
+Apache-2.0 — see [LICENSE](LICENSE).

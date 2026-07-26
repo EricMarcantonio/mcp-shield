@@ -86,6 +86,7 @@ type execer interface {
 
 // SQLiteStore is the top-level Store implementation backed by a *sql.DB.
 type SQLiteStore struct {
+	queries
 	db *sql.DB
 }
 
@@ -125,7 +126,7 @@ func Open(path string) (*SQLiteStore, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("database: apply schema: %w", err)
 	}
-	return &SQLiteStore{db: db}, nil
+	return &SQLiteStore{queries: queries{e: db}, db: db}, nil
 }
 
 // ensureParentDir creates the directory holding the database file. It lives
@@ -173,52 +174,58 @@ func warnIfDirectoryIsWorldReadable(dir string) {
 
 func (s *SQLiteStore) Close() error { return s.db.Close() }
 
-func (s *SQLiteStore) CreateServer(ctx context.Context, name, endpoint string) (*Server, error) {
-	return createServer(ctx, s.db, name, endpoint)
+// queries implements every data method of Store once, against whichever
+// execer it is bound to. Both Store implementations embed it, so a new
+// method is written here alone instead of three times (helper, SQLiteStore
+// forwarder, txStore forwarder).
+type queries struct{ e execer }
+
+func (q queries) CreateServer(ctx context.Context, name, endpoint string) (*Server, error) {
+	return createServer(ctx, q.e, name, endpoint)
 }
 
-func (s *SQLiteStore) GetServerByName(ctx context.Context, name string) (*Server, error) {
-	return getServerByName(ctx, s.db, name)
+func (q queries) GetServerByName(ctx context.Context, name string) (*Server, error) {
+	return getServerByName(ctx, q.e, name)
 }
 
-func (s *SQLiteStore) GetServerByID(ctx context.Context, id int64) (*Server, error) {
-	return getServerByID(ctx, s.db, id)
+func (q queries) GetServerByID(ctx context.Context, id int64) (*Server, error) {
+	return getServerByID(ctx, q.e, id)
 }
 
-func (s *SQLiteStore) ListServers(ctx context.Context) ([]Server, error) {
-	return listServers(ctx, s.db)
+func (q queries) ListServers(ctx context.Context) ([]Server, error) {
+	return listServers(ctx, q.e)
 }
 
-func (s *SQLiteStore) InsertManifest(ctx context.Context, m *ManifestRecord) (int64, error) {
-	return insertManifest(ctx, s.db, m)
+func (q queries) InsertManifest(ctx context.Context, m *ManifestRecord) (int64, error) {
+	return insertManifest(ctx, q.e, m)
 }
 
-func (s *SQLiteStore) GetManifestByHash(ctx context.Context, serverID int64, hash string) (*ManifestRecord, error) {
-	return getManifestByHash(ctx, s.db, serverID, hash)
+func (q queries) GetManifestByHash(ctx context.Context, serverID int64, hash string) (*ManifestRecord, error) {
+	return getManifestByHash(ctx, q.e, serverID, hash)
 }
 
-func (s *SQLiteStore) GetManifestByID(ctx context.Context, id int64) (*ManifestRecord, error) {
-	return getManifestByID(ctx, s.db, id)
+func (q queries) GetManifestByID(ctx context.Context, id int64) (*ManifestRecord, error) {
+	return getManifestByID(ctx, q.e, id)
 }
 
-func (s *SQLiteStore) GetApprovedManifest(ctx context.Context, serverID int64) (*ManifestRecord, error) {
-	return getApprovedManifest(ctx, s.db, serverID)
+func (q queries) GetApprovedManifest(ctx context.Context, serverID int64) (*ManifestRecord, error) {
+	return getApprovedManifest(ctx, q.e, serverID)
 }
 
-func (s *SQLiteStore) ListPendingManifests(ctx context.Context) ([]ManifestRecord, error) {
-	return listPendingManifests(ctx, s.db)
+func (q queries) ListPendingManifests(ctx context.Context) ([]ManifestRecord, error) {
+	return listPendingManifests(ctx, q.e)
 }
 
-func (s *SQLiteStore) UpdateManifestState(ctx context.Context, id int64, newState string) error {
-	return updateManifestState(ctx, s.db, id, newState)
+func (q queries) UpdateManifestState(ctx context.Context, id int64, newState string) error {
+	return updateManifestState(ctx, q.e, id, newState)
 }
 
-func (s *SQLiteStore) InsertApproval(ctx context.Context, a *Approval) (int64, error) {
-	return insertApproval(ctx, s.db, a)
+func (q queries) InsertApproval(ctx context.Context, a *Approval) (int64, error) {
+	return insertApproval(ctx, q.e, a)
 }
 
-func (s *SQLiteStore) ListApprovalsForManifest(ctx context.Context, manifestID int64) ([]Approval, error) {
-	return listApprovalsForManifest(ctx, s.db, manifestID)
+func (q queries) ListApprovalsForManifest(ctx context.Context, manifestID int64) ([]Approval, error) {
+	return listApprovalsForManifest(ctx, q.e, manifestID)
 }
 
 func (s *SQLiteStore) WithTx(ctx context.Context, fn func(Store) error) error {
@@ -226,7 +233,7 @@ func (s *SQLiteStore) WithTx(ctx context.Context, fn func(Store) error) error {
 	if err != nil {
 		return fmt.Errorf("database: begin tx: %w", err)
 	}
-	if err := fn(&txStore{tx: tx}); err != nil {
+	if err := fn(&txStore{queries{e: tx}}); err != nil {
 		_ = tx.Rollback()
 		return err
 	}
@@ -239,57 +246,7 @@ func (s *SQLiteStore) WithTx(ctx context.Context, fn func(Store) error) error {
 // txStore is a Store bound to an in-flight transaction, handed to the
 // callback passed to WithTx so multi-step writes (e.g. approve = supersede
 // old row + flip new row's state + insert audit record) are atomic.
-type txStore struct {
-	tx *sql.Tx
-}
-
-func (s *txStore) CreateServer(ctx context.Context, name, endpoint string) (*Server, error) {
-	return createServer(ctx, s.tx, name, endpoint)
-}
-
-func (s *txStore) GetServerByName(ctx context.Context, name string) (*Server, error) {
-	return getServerByName(ctx, s.tx, name)
-}
-
-func (s *txStore) GetServerByID(ctx context.Context, id int64) (*Server, error) {
-	return getServerByID(ctx, s.tx, id)
-}
-
-func (s *txStore) ListServers(ctx context.Context) ([]Server, error) {
-	return listServers(ctx, s.tx)
-}
-
-func (s *txStore) InsertManifest(ctx context.Context, m *ManifestRecord) (int64, error) {
-	return insertManifest(ctx, s.tx, m)
-}
-
-func (s *txStore) GetManifestByHash(ctx context.Context, serverID int64, hash string) (*ManifestRecord, error) {
-	return getManifestByHash(ctx, s.tx, serverID, hash)
-}
-
-func (s *txStore) GetManifestByID(ctx context.Context, id int64) (*ManifestRecord, error) {
-	return getManifestByID(ctx, s.tx, id)
-}
-
-func (s *txStore) GetApprovedManifest(ctx context.Context, serverID int64) (*ManifestRecord, error) {
-	return getApprovedManifest(ctx, s.tx, serverID)
-}
-
-func (s *txStore) ListPendingManifests(ctx context.Context) ([]ManifestRecord, error) {
-	return listPendingManifests(ctx, s.tx)
-}
-
-func (s *txStore) UpdateManifestState(ctx context.Context, id int64, newState string) error {
-	return updateManifestState(ctx, s.tx, id, newState)
-}
-
-func (s *txStore) InsertApproval(ctx context.Context, a *Approval) (int64, error) {
-	return insertApproval(ctx, s.tx, a)
-}
-
-func (s *txStore) ListApprovalsForManifest(ctx context.Context, manifestID int64) ([]Approval, error) {
-	return listApprovalsForManifest(ctx, s.tx, manifestID)
-}
+type txStore struct{ queries }
 
 func (s *txStore) WithTx(_ context.Context, fn func(Store) error) error {
 	// Nested transactions aren't supported; a callback already running

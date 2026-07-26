@@ -1,6 +1,8 @@
 package diff
 
 import (
+	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/EricMarcantonio/mcp-shield/internal/manifest"
@@ -129,28 +131,73 @@ func TestCompareIgnoresCanonicalizationArtifacts(t *testing.T) {
 	}
 }
 
-// TestSummarizeOmitsChangedPromptsAndResources pins a known bug (design doc
-// finding S3, internal/diff/diff.go:140-169): Summarize renders lines for
-// added/removed tools, changed tools, and added/removed prompts/resources,
-// but never iterates d.ChangedPrompts or d.ChangedResources at all. A
-// prompt-argument change — a real injection vector, since prompt arguments
-// feed straight into the model — currently produces an empty "changes" list
-// anywhere Summarize's output is shown: the dashboard's pending-manifest
-// table, the JSON pending-manifests API, and any future notification that
-// reuses this seam (see design doc Option A1). Not fixed here — Phase 5
-// owns completing Summarize before that seam is reused for notifications.
-func TestSummarizeOmitsChangedPromptsAndResources(t *testing.T) {
+// TestSummarizeCoversChangedPromptsAndResources guards the fix for design
+// doc finding S3. Summarize rendered lines for added/removed tools, changed
+// tools, and added/removed prompts/resources, but never iterated
+// d.ChangedPrompts or d.ChangedResources. A prompt-argument change — a real
+// injection vector, since prompt arguments feed straight into the model —
+// produced an empty change list everywhere Summarize's output is shown, so a
+// human could approve a diff they could not see.
+func TestSummarizeCoversChangedPromptsAndResources(t *testing.T) {
 	d := &Diff{
-		ChangedPrompts:   []PromptChange{{Name: "greeting", ArgumentsChanged: true}},
-		ChangedResources: []ResourceChange{{URI: "file:///report.csv", MimeTypeChanged: true}},
+		ChangedPrompts: []PromptChange{
+			{Name: "greeting", ArgumentsChanged: true},
+			{Name: "farewell", DescriptionChanged: true},
+		},
+		ChangedResources: []ResourceChange{
+			{URI: "file:///report.csv", MimeTypeChanged: true},
+			{URI: "file:///notes.txt", DescriptionChanged: true},
+		},
 	}
 
 	lines := Summarize(d)
 
-	if len(lines) != 0 {
-		t.Fatalf("known-bug pin broke: expected Summarize to still silently drop changed "+
-			"prompts/resources (0 lines), got %v — if Summarize was fixed to include them, "+
-			"update this test to assert the new (correct) lines instead", lines)
+	want := []string{
+		"Arguments changed: prompt greeting",
+		"Description changed: prompt farewell",
+		"MIME type changed: resource file:///report.csv",
+		"Description changed: resource file:///notes.txt",
+	}
+	if len(lines) != len(want) {
+		t.Fatalf("expected %d summary lines, got %d: %v", len(want), len(lines), lines)
+	}
+	for i, w := range want {
+		if lines[i] != w {
+			t.Fatalf("line %d: got %q, want %q (all: %v)", i, lines[i], w, lines)
+		}
+	}
+}
+
+// TestSummarizeCoversEveryDiffField is the structural guard: any field added
+// to Diff in future must show up in Summarize, or an approver silently stops
+// seeing that class of change.
+func TestSummarizeCoversEveryDiffField(t *testing.T) {
+	d := &Diff{
+		AddedTools:       []string{"t_added"},
+		RemovedTools:     []string{"t_removed"},
+		ChangedTools:     []ToolChange{{Name: "t_changed", SchemaChanged: true}},
+		AddedPrompts:     []string{"p_added"},
+		RemovedPrompts:   []string{"p_removed"},
+		ChangedPrompts:   []PromptChange{{Name: "p_changed", ArgumentsChanged: true}},
+		AddedResources:   []string{"r_added"},
+		RemovedResources: []string{"r_removed"},
+		ChangedResources: []ResourceChange{{URI: "r_changed", MimeTypeChanged: true}},
+	}
+
+	lines := Summarize(d)
+
+	joined := strings.Join(lines, "\n")
+	for _, marker := range []string{
+		"t_added", "t_removed", "t_changed",
+		"p_added", "p_removed", "p_changed",
+		"r_added", "r_removed", "r_changed",
+	} {
+		if !strings.Contains(joined, marker) {
+			t.Fatalf("Summarize dropped %q; an approver would never see that change:\n%s", marker, joined)
+		}
+	}
+	if got := reflect.TypeOf(Diff{}).NumField(); got != 9 {
+		t.Fatalf("Diff has %d fields but this test only covers 9 — add the new field to Summarize and here", got)
 	}
 }
 

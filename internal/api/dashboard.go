@@ -34,14 +34,20 @@ type dashboardManifestDetailData struct {
 	History  []database.Approval
 }
 
+// diffView is the manifest_detail.html view of a stored diff: every field is
+// a flat list of names the template renders as its own section. Each field of
+// diff.Diff must appear here and in the template, or the dashboard silently
+// hides that class of change from the person about to approve it.
 type diffView struct {
 	AddedTools       []string
 	RemovedTools     []string
 	ChangedTools     []string
 	AddedPrompts     []string
 	RemovedPrompts   []string
+	ChangedPrompts   []string
 	AddedResources   []string
 	RemovedResources []string
+	ChangedResources []string
 }
 
 func buildDiffView(diffJSON string) *diffView {
@@ -52,14 +58,22 @@ func buildDiffView(diffJSON string) *diffView {
 	if err := json.Unmarshal([]byte(diffJSON), &d); err != nil {
 		return nil
 	}
-	changed := make([]string, 0, len(d.ChangedTools))
+	changedTools := make([]string, 0, len(d.ChangedTools))
 	for _, tc := range d.ChangedTools {
-		changed = append(changed, tc.Name)
+		changedTools = append(changedTools, tc.Name)
+	}
+	changedPrompts := make([]string, 0, len(d.ChangedPrompts))
+	for _, pc := range d.ChangedPrompts {
+		changedPrompts = append(changedPrompts, pc.Name)
+	}
+	changedResources := make([]string, 0, len(d.ChangedResources))
+	for _, rc := range d.ChangedResources {
+		changedResources = append(changedResources, rc.URI)
 	}
 	return &diffView{
-		AddedTools: d.AddedTools, RemovedTools: d.RemovedTools, ChangedTools: changed,
-		AddedPrompts: d.AddedPrompts, RemovedPrompts: d.RemovedPrompts,
-		AddedResources: d.AddedResources, RemovedResources: d.RemovedResources,
+		AddedTools: d.AddedTools, RemovedTools: d.RemovedTools, ChangedTools: changedTools,
+		AddedPrompts: d.AddedPrompts, RemovedPrompts: d.RemovedPrompts, ChangedPrompts: changedPrompts,
+		AddedResources: d.AddedResources, RemovedResources: d.RemovedResources, ChangedResources: changedResources,
 	}
 }
 

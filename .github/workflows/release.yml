@@ -1,0 +1,65 @@
+name: release
+
+# Triggered by pushing a `vX.Y.Z` tag. GoReleaser reads .goreleaser.yaml,
+# cross-compiles cmd/mcp-shield for 6 platforms (CGO_ENABLED=0 works because
+# the only dependency, modernc.org/sqlite, is pure Go), publishes a GitHub
+# Release with archives + checksums, and builds/pushes a multi-arch Docker
+# image to ghcr.io/ericmarcantonio/mcp-shield.
+#
+# PRIVATE REPO NOTE: as of this workflow's introduction, this repository is
+# private. Pushing to GHCR with GITHUB_TOKEN still works from a private repo,
+# but the resulting package inherits the repo's visibility: nobody can
+# `docker pull` it, and `go install .../cmd/mcp-shield@vX.Y.Z` won't resolve
+# for anyone outside the repo's collaborators, until (a) the repo is made
+# public and (b) the GHCR package's own visibility is separately flipped to
+# public in GitHub package settings (that second step is manual — package
+# visibility does not automatically follow repo visibility). Nothing below
+# needs to change when that happens; this note documents the dependency, it
+# does not gate the workflow.
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write # create the GitHub Release and upload archives/checksums
+  packages: write # push images/manifests to ghcr.io
+
+jobs:
+  goreleaser:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0 # goreleaser needs full history to build the changelog
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4.2.0
+      - uses: docker/login-action@abd2ef45e78c5afb21d64d4ca52ee8550d9572c7 # v4.5.1
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7.2.3
+        with:
+          version: "~> v2"
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # GoReleaser already fails this job (non-zero exit) if a docker build or
+      # push errors out — but a job that goes red *after* the GitHub Release
+      # and its archives are already published looks, at a glance, like a
+      # finished release. Explicitly re-checking that every image manifest
+      # this tag should have produced actually exists in the registry turns
+      # "half-published" into a loud, unambiguous failure instead of
+      # something that has to be noticed by reading logs.
+      - name: Verify published Docker manifests exist
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          for tag in "$version" "$version-amd64" "$version-arm64" latest; do
+            echo "Checking ghcr.io/ericmarcantonio/mcp-shield:$tag"
+            docker buildx imagetools inspect "ghcr.io/ericmarcantonio/mcp-shield:$tag"
+          done

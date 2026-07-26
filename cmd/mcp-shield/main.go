@@ -19,9 +19,16 @@ import (
 	"github.com/EricMarcantonio/mcp-shield/internal/mcp"
 )
 
+// version is stamped by GoReleaser via -ldflags at release time
+// (-X main.version={{.Version}}); "dev" identifies a local, non-release build.
+var version = "dev"
+
 func main() {
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
+		case "version":
+			fmt.Println("mcp-shield " + version)
+			return
 		case "servers", "manifests", "approve", "reject", "diff":
 			if err := runCLI(os.Args[1], os.Args[2:]); err != nil {
 				fmt.Fprintln(os.Stderr, "error:", err)
@@ -32,7 +39,7 @@ func main() {
 			// fall through to daemon mode
 		default:
 			fmt.Fprintf(os.Stderr, "unknown command %q\n", os.Args[1])
-			fmt.Fprintln(os.Stderr, "usage: mcp-shield [serve|servers|manifests|approve <id>|reject <id>|diff <id>]")
+			fmt.Fprintln(os.Stderr, "usage: mcp-shield [serve|servers|manifests|approve <id>|reject <id>|diff <id>|version]")
 			os.Exit(1)
 		}
 	}

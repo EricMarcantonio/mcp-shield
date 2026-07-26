@@ -10,8 +10,8 @@ help: ## Show available targets
 .PHONY: build
 build: ## Build gateway and test server into bin/
 	mkdir -p bin
-	go build -o bin/mcp-shield ./cmd/gateway
-	go build -o bin/mcp-shield-testserver ./cmd/server
+	go build -o bin/mcp-shield ./cmd/mcp-shield
+	go build -o bin/mcp-shield-testserver ./cmd/mcp-shield-testserver
 
 .PHONY: run
 run: build ## Build and run the gateway locally

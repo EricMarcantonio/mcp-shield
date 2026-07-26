@@ -1,6 +1,6 @@
 // Package app wires the gateway's components (store, approval workflow,
 // proxy, API/dashboard) into one runnable process. It exists so
-// cmd/gateway/main.go stays a thin entrypoint and so integration tests can
+// cmd/mcp-shield/main.go stays a thin entrypoint and so integration tests can
 // start/stop a fully wired gateway in-process on ephemeral ports.
 package app
 

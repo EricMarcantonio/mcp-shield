@@ -18,7 +18,7 @@ import (
 
 // DefaultTemplatesDir is where the dashboard looks for its templates when
 // none is configured, relative to the process's working directory (the
-// repo root when running `go run ./cmd/gateway` or the Docker image's
+// repo root when running `go run ./cmd/mcp-shield` or the Docker image's
 // WORKDIR, both of which COPY web/ alongside the binary).
 const DefaultTemplatesDir = "web/dashboard/templates"
 

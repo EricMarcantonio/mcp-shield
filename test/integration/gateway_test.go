@@ -1,12 +1,13 @@
 //go:build integration
 
 // Package integration drives a fully wired gateway (internal/app) against
-// the fake MCP test server (cmd/server), stepping it through v1 -> v2 -> v3
-// and asserting the approval workflow's partial-allow behavior end to end:
-// an unapproved capability change withholds only the new/changed tools,
-// not the whole server.
+// the fake MCP test server (cmd/mcp-shield-testserver), stepping it through
+// v1 -> v2 -> v3 and asserting the approval workflow's partial-allow
+// behavior end to end: an unapproved capability change withholds only the
+// new/changed tools, not the whole server.
 // Run via `go test -tags=integration ./test/...`; requires `make build`
-// (or `go build ./cmd/server`) to have produced the testserver binary.
+// (or `go build ./cmd/mcp-shield-testserver`) to have produced the
+// testserver binary.
 package integration
 
 import (

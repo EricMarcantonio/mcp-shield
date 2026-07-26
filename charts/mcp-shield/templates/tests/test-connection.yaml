@@ -1,0 +1,30 @@
+{{/*
+`helm test` connectivity check. Runs in-cluster (a normal pod, not
+port-forward), which is exactly the kind of access dashboard.networkPolicy
+is meant to restrict -- so this only passes if this Job's own pod is
+covered by dashboard.networkPolicy.allowFrom, or if networkPolicy.enabled
+is false. That's intentional: a locked-down dashboard should make this
+test fail closed too, not quietly bypass the same policy a real client
+would be subject to.
+*/}}
+apiVersion: v1
+kind: Pod
+metadata:
+  name: {{ include "mcp-shield.fullname" . }}-test-healthz
+  labels:
+    {{- include "mcp-shield.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": test
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  restartPolicy: Never
+  containers:
+    - name: healthz
+      # mcp-shield's own image is distroless (no shell, no wget) -- this
+      # needs a separate, minimal image capable of making one HTTP call.
+      image: {{ .Values.tests.image }}
+      command:
+        - /bin/sh
+        - -c
+        - |
+          wget -q -O - http://{{ include "mcp-shield.fullname" . }}-dashboard:{{ .Values.dashboard.service.port }}/healthz

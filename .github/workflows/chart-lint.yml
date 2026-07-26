@@ -1,0 +1,74 @@
+name: chart-lint
+
+# Self-contained CI for charts/mcp-shield: lint + render with default
+# values and again with the values a real operator flipping this chart's
+# "make it more open" knobs would set (charts/mcp-shield/ci/
+# operator-flipped-values.yaml), then validate the rendered output against
+# the Kubernetes API schema with kubeconform. Deliberately its own
+# workflow rather than a job bolted onto ci.yml, so a chart-only change
+# doesn't have to wait on (or risk breaking) the Go test/lint/govulncheck
+# pipeline, and vice versa.
+
+on:
+  push:
+    branches: [main]
+    paths: ["charts/mcp-shield/**", ".github/workflows/chart-lint.yml"]
+  pull_request:
+    paths: ["charts/mcp-shield/**", ".github/workflows/chart-lint.yml"]
+
+permissions:
+  contents: read
+
+jobs:
+  lint-and-template:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: v4.2.3
+
+      - name: helm lint
+        run: helm lint charts/mcp-shield
+
+      - name: helm template (default values)
+        run: helm template mcp-shield charts/mcp-shield > /tmp/rendered-default.yaml
+
+      - name: helm template (operator-flipped values)
+        run: |
+          helm template mcp-shield charts/mcp-shield \
+            -f charts/mcp-shield/ci/operator-flipped-values.yaml \
+            > /tmp/rendered-flipped.yaml
+
+      - name: helm template rejects replicaCount > 1
+        # This chart's SQLite-backed state does not support more than one
+        # live replica (see values.yaml `replicaCount`) -- the chart
+        # refuses to render rather than silently deploying something that
+        # will eventually corrupt the approvals audit trail. Assert that
+        # guard stays in place.
+        run: |
+          set -euo pipefail
+          if helm template mcp-shield charts/mcp-shield --set replicaCount=2 > /dev/null 2>/tmp/replica-guard.log; then
+            echo "expected 'helm template --set replicaCount=2' to fail, but it succeeded" >&2
+            exit 1
+          fi
+          grep -q "replicaCount must be 1" /tmp/replica-guard.log
+
+      # kubeconform, not a GitHub Action: this is a plain binary download
+      # (no repo to pin a SHA against), version-pinned by URL instead.
+      - name: Install kubeconform
+        run: |
+          set -euo pipefail
+          curl -sSL -o /tmp/kubeconform.tar.gz \
+            https://github.com/yannh/kubeconform/releases/download/v0.6.7/kubeconform-linux-amd64.tar.gz
+          tar -xzf /tmp/kubeconform.tar.gz -C /tmp kubeconform
+          sudo install /tmp/kubeconform /usr/local/bin/kubeconform
+
+      - name: kubeconform (default values)
+        run: kubeconform -strict -summary /tmp/rendered-default.yaml
+
+      - name: kubeconform (operator-flipped values)
+        run: kubeconform -strict -summary /tmp/rendered-flipped.yaml
+
+      - name: helm package
+        run: helm package charts/mcp-shield --version 0.0.0-ci --app-version 0.0.0-ci --destination /tmp/chart-dist

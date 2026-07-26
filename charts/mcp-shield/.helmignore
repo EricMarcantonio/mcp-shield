@@ -1,0 +1,16 @@
+# Patterns to ignore when building packages.
+.git/
+.gitignore
+.vscode/
+*.swp
+*.bak
+*.tmp
+*.orig
+*~
+.DS_Store
+# CI/CD tooling
+.github/
+.circleci/
+.travis.yml
+# helm lint/template scratch values used in CI, not part of the chart
+ci/

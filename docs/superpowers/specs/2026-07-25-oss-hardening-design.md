@@ -25,6 +25,30 @@ from you" and the corresponding plan phase is gated on it.
 | D5 | Coverage floor | **70%** on `./internal/...`, as recommended. | 2026-07-25 |
 | D6 | `cmd/` renames | **Yes**, as recommended. Executing in Phase 6. | 2026-07-25 |
 | D7 | Target protocol version | **`2025-11-25` only, for now.** See below. | 2026-07-25 |
+| D8 | Risk classification | **Removed entirely** — code, storage, API field, dashboard, and docs. See below. | 2026-07-26 |
+| D9 | Container registry, revisited | **ghcr only.** No Docker Hub mirror. Requires one manual step: ghcr package visibility must be flipped to public separately from repo visibility. | 2026-07-26 |
+| D10 | Kubernetes | **Helm chart shipped**, published as an OCI artifact to ghcr on tag. Note this reverses the original "no Kubernetes manifests" assumption in Question 1 below. | 2026-07-26 |
+
+### D8 — Remove risk classification
+
+`ClassifyRisk` labelled each diff HIGH/MEDIUM/LOW, where HIGH meant a newly
+added tool's name contained one of `delete`, `upload`, `execute`, `shell`,
+`file`, `write`, `admin`, `credential`. The README documented the bluntness as
+intentional.
+
+**Decision: delete the feature outright** — the function, the stored column, the
+API field, the dashboard badge, and every mention in the docs.
+
+Rationale: a substring match that flags `filesystem_status` because it contains
+`file`, while missing a genuinely dangerous tool named `sync_to_remote`, is
+security theatre. It attaches an authoritative-looking label to a judgement the
+tool cannot actually make, and an approver who starts trusting the badge is
+worse off than one reading the diff. The diff itself — what was added, removed,
+or changed against the approved baseline — is the real signal, and it is
+complete. Presenting a weak heuristic beside it dilutes the thing that works.
+
+This does not change gate semantics. Risk never affected whether something was
+withheld; it was only ever a display label.
 
 ### D3 — Transport sequencing (amends the Phase 9 structure below)
 

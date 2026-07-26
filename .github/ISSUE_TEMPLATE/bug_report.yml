@@ -1,0 +1,38 @@
+name: Bug report
+description: Something behaves incorrectly (non-security)
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        If this is a gate bypass or other security issue, use the private
+        advisory link instead of this form.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: Include the request you sent, what the gateway returned, and what you expected.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Reproduction steps
+      placeholder: |
+        1. config/servers.json contents...
+        2. curl -X POST localhost:8080/mcp/... -d '...'
+        3. ...
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: mcp-shield version
+      placeholder: v0.1.0 / commit sha / docker tag
+    validations:
+      required: true
+  - type: textarea
+    id: env
+    attributes:
+      label: Environment
+      placeholder: OS, deployment (docker compose / binary), FAIL_MODE, upstream server

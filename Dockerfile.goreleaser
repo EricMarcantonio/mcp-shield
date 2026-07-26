@@ -1,0 +1,12 @@
+# Used by GoReleaser at release time, not by `make docker-build`/docker-compose
+# (see Dockerfile for that dev-facing image, which also bundles the test
+# server). GoReleaser injects the prebuilt, already cross-compiled binary
+# instead of running `go build` here; the build context is a scratch dir
+# containing only the binary plus the extra_files (web/) listed in
+# .goreleaser.yaml.
+FROM gcr.io/distroless/static-debian12
+WORKDIR /app
+COPY mcp-shield ./bin/mcp-shield
+COPY web ./web
+EXPOSE 8080 8081
+ENTRYPOINT ["./bin/mcp-shield"]

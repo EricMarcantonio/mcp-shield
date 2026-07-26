@@ -3,8 +3,8 @@ WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-RUN CGO_ENABLED=0 GOOS=linux go build -o /out/mcp-shield ./cmd/gateway
-RUN CGO_ENABLED=0 GOOS=linux go build -o /out/mcp-shield-testserver ./cmd/server
+RUN CGO_ENABLED=0 GOOS=linux go build -o /out/mcp-shield ./cmd/mcp-shield
+RUN CGO_ENABLED=0 GOOS=linux go build -o /out/mcp-shield-testserver ./cmd/mcp-shield-testserver
 
 FROM gcr.io/distroless/static-debian12
 WORKDIR /app

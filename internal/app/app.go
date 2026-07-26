@@ -1,15 +1,17 @@
 // Package app wires the gateway's components (store, approval workflow,
 // proxy, API/dashboard) into one runnable process. It exists so
-// cmd/gateway/main.go stays a thin entrypoint and so integration tests can
+// cmd/mcp-shield/main.go stays a thin entrypoint and so integration tests can
 // start/stop a fully wired gateway in-process on ephemeral ports.
 package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
+	"time"
 
 	"github.com/EricMarcantonio/mcp-shield/internal/api"
 	"github.com/EricMarcantonio/mcp-shield/internal/approval"
@@ -25,6 +27,10 @@ type Config struct {
 	FailMode     approval.FailMode
 	Servers      []mcp.ServerConfig
 	TemplatesDir string // empty uses api.DefaultTemplatesDir
+
+	// UpstreamTimeout bounds one proxied request's upstream work; zero
+	// uses mcp.DefaultUpstreamTimeout.
+	UpstreamTimeout time.Duration
 }
 
 type App struct {
@@ -61,19 +67,23 @@ func New(cfg Config) (*App, error) {
 	gate := &gateAdapter{store: store, workflow: workflow}
 	downstream, err := mcp.NewDownstreamHandler(cfg.Servers, gate)
 	if err != nil {
-		store.Close()
+		_ = store.Close()
 		return nil, fmt.Errorf("app: init downstream handler: %w", err)
 	}
+	if cfg.UpstreamTimeout > 0 {
+		downstream.UpstreamTimeout = cfg.UpstreamTimeout
+	}
 
-	proxyLn, err := net.Listen("tcp", cfg.ProxyAddr)
+	var lc net.ListenConfig
+	proxyLn, err := lc.Listen(context.Background(), "tcp", cfg.ProxyAddr)
 	if err != nil {
-		store.Close()
+		_ = store.Close()
 		return nil, fmt.Errorf("app: listen proxy: %w", err)
 	}
-	apiLn, err := net.Listen("tcp", cfg.APIAddr)
+	apiLn, err := lc.Listen(context.Background(), "tcp", cfg.APIAddr)
 	if err != nil {
-		proxyLn.Close()
-		store.Close()
+		_ = proxyLn.Close()
+		_ = store.Close()
 		return nil, fmt.Errorf("app: listen api: %w", err)
 	}
 
@@ -88,8 +98,8 @@ func New(cfg Config) (*App, error) {
 		downstream: downstream,
 		proxyLn:    proxyLn,
 		apiLn:      apiLn,
-		proxySrv:   &http.Server{Handler: proxyMux},
-		apiSrv:     &http.Server{Handler: apiHandler},
+		proxySrv:   &http.Server{Handler: proxyMux, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 60 * time.Second, IdleTimeout: 120 * time.Second},
+		apiSrv:     &http.Server{Handler: apiHandler, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 60 * time.Second, IdleTimeout: 120 * time.Second},
 		ProxyAddr:  proxyLn.Addr().String(),
 		APIAddr:    apiLn.Addr().String(),
 	}
@@ -99,7 +109,7 @@ func New(cfg Config) (*App, error) {
 // Start launches the proxy and API listeners in background goroutines and
 // returns immediately. Serve errors after a clean Shutdown are swallowed;
 // anything else is logged.
-func (a *App) Start(ctx context.Context) error {
+func (a *App) Start(_ context.Context) error {
 	go func() {
 		if err := a.proxySrv.Serve(a.proxyLn); err != nil && err != http.ErrServerClosed {
 			slog.Error("proxy server exited", "error", err)
@@ -136,18 +146,22 @@ type gateAdapter struct {
 }
 
 func (g *gateAdapter) CheckAndRecord(ctx context.Context, serverName string, tools []mcp.Tool, prompts []mcp.Prompt, resources []mcp.Resource) (*mcp.GateDecision, error) {
+	// A configured server is registered lazily, on its first connect.
 	srv, err := g.store.GetServerByName(ctx, serverName)
+	if errors.Is(err, database.ErrNotFound) {
+		srv, err = g.store.CreateServer(ctx, serverName, "")
+	}
 	if err != nil {
 		return nil, err
 	}
-	if srv == nil {
-		srv, err = g.store.CreateServer(ctx, serverName, "")
-		if err != nil {
-			return nil, err
-		}
-	}
 
-	m := manifest.Build(tools, prompts, resources)
+	// A capability set that violates the protocol's unique-identity rule is
+	// rejected here, which fails the in-flight request closed rather than
+	// fingerprinting a capability set the gate could not enforce.
+	m, err := manifest.Build(tools, prompts, resources)
+	if err != nil {
+		return nil, err
+	}
 	result, err := g.workflow.CheckAndRecord(ctx, srv.ID, m)
 	if err != nil {
 		return nil, err

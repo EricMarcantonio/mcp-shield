@@ -117,6 +117,31 @@ func TestCompareIgnoresCanonicalizationArtifacts(t *testing.T) {
 	}
 }
 
+// TestSummarizeOmitsChangedPromptsAndResources pins a known bug (design doc
+// finding S3, internal/diff/diff.go:140-169): Summarize renders lines for
+// added/removed tools, changed tools, and added/removed prompts/resources,
+// but never iterates d.ChangedPrompts or d.ChangedResources at all. A
+// prompt-argument change — a real injection vector, since prompt arguments
+// feed straight into the model — currently produces an empty "changes" list
+// anywhere Summarize's output is shown: the dashboard's pending-manifest
+// table, the JSON pending-manifests API, and any future notification that
+// reuses this seam (see design doc Option A1). Not fixed here — Phase 5
+// owns completing Summarize before that seam is reused for notifications.
+func TestSummarizeOmitsChangedPromptsAndResources(t *testing.T) {
+	d := &Diff{
+		ChangedPrompts:   []PromptChange{{Name: "greeting", ArgumentsChanged: true}},
+		ChangedResources: []ResourceChange{{URI: "file:///report.csv", MimeTypeChanged: true}},
+	}
+
+	lines := Summarize(d)
+
+	if len(lines) != 0 {
+		t.Fatalf("known-bug pin broke: expected Summarize to still silently drop changed "+
+			"prompts/resources (0 lines), got %v — if Summarize was fixed to include them, "+
+			"update this test to assert the new (correct) lines instead", lines)
+	}
+}
+
 func TestClassifyRiskKnownFalsePositiveSubstring(t *testing.T) {
 	// Documented, intentional edge case: "filesystem_status" contains
 	// "file" and trips HIGH under the literal substring rule, even

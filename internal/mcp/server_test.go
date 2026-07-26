@@ -81,6 +81,36 @@ func TestToolsListFiltersUnsafeTools(t *testing.T) {
 	}
 }
 
+func TestPromptsListFiltersUnsafePrompts(t *testing.T) {
+	up := &fakeUpstream{prompts: []Prompt{{Name: "safe_prompt"}, {Name: "unsafe_prompt"}}}
+	gate := &fakeGate{decision: &GateDecision{State: "PENDING", SafePrompts: map[string]bool{"safe_prompt": true}}}
+
+	resp := rpc(t, newTestHandler(t, up, gate), "/mcp/cal", `{"jsonrpc":"2.0","id":1,"method":"prompts/list"}`)
+
+	var result PromptsListResult
+	if err := json.Unmarshal(resp.Result, &result); err != nil {
+		t.Fatalf("decode result: %v", err)
+	}
+	if len(result.Prompts) != 1 || result.Prompts[0].Name != "safe_prompt" {
+		t.Fatalf("expected only safe_prompt, got %+v", result.Prompts)
+	}
+}
+
+func TestResourcesListFiltersUnsafeResources(t *testing.T) {
+	up := &fakeUpstream{resources: []Resource{{URI: "file:///safe"}, {URI: "file:///unsafe"}}}
+	gate := &fakeGate{decision: &GateDecision{State: "PENDING", SafeResources: map[string]bool{"file:///safe": true}}}
+
+	resp := rpc(t, newTestHandler(t, up, gate), "/mcp/cal", `{"jsonrpc":"2.0","id":1,"method":"resources/list"}`)
+
+	var result ResourcesListResult
+	if err := json.Unmarshal(resp.Result, &result); err != nil {
+		t.Fatalf("decode result: %v", err)
+	}
+	if len(result.Resources) != 1 || result.Resources[0].URI != "file:///safe" {
+		t.Fatalf("expected only file:///safe, got %+v", result.Resources)
+	}
+}
+
 func TestToolsCallBlockedReturnsManifestStateCode(t *testing.T) {
 	cases := []struct {
 		name     string
@@ -202,6 +232,48 @@ func TestPassthroughBlockedWithoutBaseline(t *testing.T) {
 				t.Fatalf("expected passthrough to be forwarded, got error %+v", resp.Error)
 			}
 		})
+	}
+}
+
+// TestEnsureStartedNeverRecoversDeadUpstream pins a known bug (design doc
+// finding C2, internal/mcp/server.go:57-79): ensureStarted only calls
+// newClient when s.client is nil, and nothing in this codebase ever sets
+// s.client back to nil once it's been assigned. So once an upstream
+// subprocess dies, ensureStarted keeps handing back that same dead client
+// forever — even if a fresh call to newClient would succeed — until the
+// whole gateway process is restarted. Fail-closed on a dead upstream is
+// correct; fail-closed-forever is an availability bug. Not fixed here —
+// Phase 5 owns exposing UpstreamClient.Closed() and having ensureStarted
+// discard and respawn a dead client.
+func TestEnsureStartedNeverRecoversDeadUpstream(t *testing.T) {
+	first := &fakeUpstream{}
+	session := &serverSession{
+		cfg:       ServerConfig{Name: "cal"},
+		newClient: func(ctx context.Context, cfg ServerConfig) (upstream, error) { return first, nil },
+	}
+
+	got, err := session.ensureStarted(context.Background())
+	if err != nil {
+		t.Fatalf("ensureStarted: %v", err)
+	}
+	if got != upstream(first) {
+		t.Fatalf("expected the first client back on the first call")
+	}
+
+	// Simulate the upstream subprocess dying and a fresh connection now
+	// being available: swap in a factory that would return a different,
+	// healthy client.
+	second := &fakeUpstream{}
+	session.newClient = func(ctx context.Context, cfg ServerConfig) (upstream, error) { return second, nil }
+
+	got, err = session.ensureStarted(context.Background())
+	if err != nil {
+		t.Fatalf("ensureStarted: %v", err)
+	}
+	if got != upstream(first) {
+		t.Fatalf("known-bug pin broke: ensureStarted returned a new client after the factory "+
+			"changed — if it now recovers a dead upstream, update this test to assert recovery "+
+			"instead of the stale-forever behavior; got %+v, want the original first client", got)
 	}
 }
 

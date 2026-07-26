@@ -12,9 +12,10 @@ import (
 // fakeTransport is a scriptable Transport double: tests push frames/errors
 // in and inspect what the client sends, without a real subprocess.
 type fakeTransport struct {
-	frames chan []byte
-	errs   chan error
-	sent   chan []byte
+	frames  chan []byte
+	errs    chan error
+	sent    chan []byte
+	onClose func()
 }
 
 func newFakeTransport() *fakeTransport {
@@ -25,7 +26,12 @@ func (t *fakeTransport) Send(msg []byte) error           { t.sent <- msg; return
 func (t *fakeTransport) Recv() (<-chan []byte, <-chan error) {
 	return t.frames, t.errs
 }
-func (t *fakeTransport) Close() error { return nil }
+func (t *fakeTransport) Close() error {
+	if t.onClose != nil {
+		t.onClose()
+	}
+	return nil
+}
 
 // shutdownFramesThenErrs closes frames alone first. Because errs is still
 // open (and never receives a value), dispatchLoop's select has exactly one

@@ -46,6 +46,188 @@ func TestServerCRUD(t *testing.T) {
 	}
 }
 
+func TestGetServerByID(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+
+	srv, err := store.CreateServer(ctx, "calendar", "")
+	if err != nil {
+		t.Fatalf("create server: %v", err)
+	}
+
+	got, err := store.GetServerByID(ctx, srv.ID)
+	if err != nil || got == nil {
+		t.Fatalf("get by id: %v, %v", got, err)
+	}
+	if got.Name != "calendar" {
+		t.Fatalf("expected name calendar, got %q", got.Name)
+	}
+
+	missing, err := store.GetServerByID(ctx, 9999)
+	if err != nil {
+		t.Fatalf("get missing by id: %v", err)
+	}
+	if missing != nil {
+		t.Fatalf("expected nil for a missing server id, got %+v", missing)
+	}
+}
+
+func TestListServersEmpty(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+
+	servers, err := store.ListServers(ctx)
+	if err != nil {
+		t.Fatalf("list servers: %v", err)
+	}
+	if len(servers) != 0 {
+		t.Fatalf("expected no servers, got %+v", servers)
+	}
+}
+
+func TestListServersOrderedByName(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+
+	if _, err := store.CreateServer(ctx, "zeta", ""); err != nil {
+		t.Fatalf("create zeta: %v", err)
+	}
+	if _, err := store.CreateServer(ctx, "alpha", ""); err != nil {
+		t.Fatalf("create alpha: %v", err)
+	}
+
+	servers, err := store.ListServers(ctx)
+	if err != nil {
+		t.Fatalf("list servers: %v", err)
+	}
+	if len(servers) != 2 || servers[0].Name != "alpha" || servers[1].Name != "zeta" {
+		t.Fatalf("expected [alpha, zeta], got %+v", servers)
+	}
+}
+
+func TestGetManifestByHash(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	srv, _ := store.CreateServer(ctx, "a", "")
+
+	id, err := store.InsertManifest(ctx, &ManifestRecord{ServerID: srv.ID, Hash: "h1", CanonicalJSON: "{}", State: StatePending})
+	if err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+
+	got, err := store.GetManifestByHash(ctx, srv.ID, "h1")
+	if err != nil || got == nil {
+		t.Fatalf("get by hash: %v, %v", got, err)
+	}
+	if got.ID != id {
+		t.Fatalf("expected id %d, got %d", id, got.ID)
+	}
+
+	missing, err := store.GetManifestByHash(ctx, srv.ID, "nope")
+	if err != nil {
+		t.Fatalf("get missing by hash: %v", err)
+	}
+	if missing != nil {
+		t.Fatalf("expected nil for an unknown hash, got %+v", missing)
+	}
+}
+
+func TestGetApprovedManifestNone(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	srv, _ := store.CreateServer(ctx, "a", "")
+	if _, err := store.InsertManifest(ctx, &ManifestRecord{ServerID: srv.ID, Hash: "h1", CanonicalJSON: "{}", State: StatePending}); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+
+	approved, err := store.GetApprovedManifest(ctx, srv.ID)
+	if err != nil {
+		t.Fatalf("get approved: %v", err)
+	}
+	if approved != nil {
+		t.Fatalf("expected nil when no manifest is APPROVED, got %+v", approved)
+	}
+}
+
+func TestGetApprovedManifestFound(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	srv, _ := store.CreateServer(ctx, "a", "")
+	id, err := store.InsertManifest(ctx, &ManifestRecord{ServerID: srv.ID, Hash: "h1", CanonicalJSON: "{}", State: StatePending})
+	if err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	if err := store.UpdateManifestState(ctx, id, StateApproved); err != nil {
+		t.Fatalf("update state: %v", err)
+	}
+
+	approved, err := store.GetApprovedManifest(ctx, srv.ID)
+	if err != nil || approved == nil {
+		t.Fatalf("get approved: %v, %v", approved, err)
+	}
+	if approved.ID != id {
+		t.Fatalf("expected the approved manifest %d, got %+v", id, approved)
+	}
+}
+
+// TestWithTxForwardsReadsToTheSameTransaction exercises txStore's read
+// methods (GetServerByID, ListServers, GetManifestByHash, GetApprovedManifest)
+// through WithTx, not just SQLiteStore's — the two forward to shared helpers
+// (finding S1) but are still two separate call paths worth pinning: a read
+// inside an in-flight transaction must see that transaction's own writes
+// before it commits.
+func TestWithTxForwardsReadsToTheSameTransaction(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+
+	err := store.WithTx(ctx, func(tx Store) error {
+		srv, err := tx.CreateServer(ctx, "a", "")
+		if err != nil {
+			return err
+		}
+		if _, err := tx.GetServerByID(ctx, srv.ID); err != nil {
+			return err
+		}
+		if _, err := tx.GetServerByName(ctx, "a"); err != nil {
+			return err
+		}
+		if _, err := tx.ListServers(ctx); err != nil {
+			return err
+		}
+
+		id, err := tx.InsertManifest(ctx, &ManifestRecord{ServerID: srv.ID, Hash: "h1", CanonicalJSON: "{}", State: StatePending})
+		if err != nil {
+			return err
+		}
+		if _, err := tx.GetManifestByHash(ctx, srv.ID, "h1"); err != nil {
+			return err
+		}
+		if err := tx.UpdateManifestState(ctx, id, StateApproved); err != nil {
+			return err
+		}
+		if _, err := tx.GetApprovedManifest(ctx, srv.ID); err != nil {
+			return err
+		}
+		if _, err := tx.ListPendingManifests(ctx); err != nil {
+			return err
+		}
+		if _, err := tx.InsertApproval(ctx, &Approval{ManifestID: id, Decision: DecisionApproved, Username: "eric"}); err != nil {
+			return err
+		}
+		_, err = tx.ListApprovalsForManifest(ctx, id)
+		return err
+	})
+	if err != nil {
+		t.Fatalf("WithTx: %v", err)
+	}
+
+	// Committed: visible outside the transaction too.
+	approved, err := store.GetApprovedManifest(ctx, 1)
+	if err != nil || approved == nil {
+		t.Fatalf("expected the committed approval visible after WithTx returns: %v, %v", approved, err)
+	}
+}
+
 func TestManifestCompositeUniqueIndex(t *testing.T) {
 	ctx := context.Background()
 	store := openTestStore(t)

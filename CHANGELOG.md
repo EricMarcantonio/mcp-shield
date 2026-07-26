@@ -6,6 +6,14 @@ All notable changes to mcp-shield are documented here. Format follows
 
 ## [Unreleased]
 
+Nothing yet.
+
+## [0.1.0] - 2026-07-26
+
+First tagged release. mcp-shield has been usable as a gateway for a while;
+this is the point at which it became installable, verifiable, and
+releasable by someone who is not its author.
+
 ### Removed
 - **Breaking:** risk classification (`ClassifyRisk`, the `RiskLow`/
   `RiskMedium`/`RiskHigh` constants, and the substring `riskKeywords` list
@@ -77,3 +85,6 @@ All notable changes to mcp-shield are documented here. Format follows
   ghcr.io/ericmarcantonio/mcp-shield:latest` alongside its existing
   `build: .`; this has no effect until that tag exists in a public
   registry — local builds remain the working path.
+
+[Unreleased]: https://github.com/EricMarcantonio/mcp-shield/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/EricMarcantonio/mcp-shield/releases/tag/v0.1.0

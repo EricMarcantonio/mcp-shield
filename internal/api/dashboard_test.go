@@ -142,6 +142,60 @@ func TestDashboardDecisionRedirects(t *testing.T) {
 	}
 }
 
+// TestDashboardDecisionWithoutUsernameRejected mirrors the JSON API: the
+// dashboard templates always post an explicit username, so a form arriving
+// without one was hand-crafted, and substituting a default would put an
+// identity nobody supplied into the audit trail.
+func TestDashboardDecisionWithoutUsernameRejected(t *testing.T) {
+	s, serverID := newDashboardTestServer(t, realTemplatesDir)
+	id := seedPendingManifest(t, s, serverID)
+
+	rr := postDashboardForm(t, s, "/manifests/"+itoa(id)+"/approve", url.Values{"reason": {"no name"}})
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for an unattributable decision, got %d: %s", rr.Code, rr.Body.String())
+	}
+}
+
+// TestDashboardRepeatDecisionIsConflictNot500 pins design doc finding M2:
+// the dashboard mapped every decision error to 500, while the JSON API
+// already distinguished ErrNotPending (409) and ErrNotFound (404). The same
+// error must produce the same status on both surfaces.
+func TestDashboardRepeatDecisionIsConflictNot500(t *testing.T) {
+	s, serverID := newDashboardTestServer(t, realTemplatesDir)
+	id := seedPendingManifest(t, s, serverID)
+
+	form := url.Values{"username": {"eric"}}
+	if rr := postDashboardForm(t, s, "/manifests/"+itoa(id)+"/approve", form); rr.Code != http.StatusSeeOther {
+		t.Fatalf("first approval should succeed, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	rr := postDashboardForm(t, s, "/manifests/"+itoa(id)+"/approve", form)
+
+	if rr.Code != http.StatusConflict {
+		t.Fatalf("expected 409 re-approving an already-approved manifest, got %d: %s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestDashboardDecisionOnMissingManifestIs404(t *testing.T) {
+	s, _ := newDashboardTestServer(t, realTemplatesDir)
+
+	rr := postDashboardForm(t, s, "/manifests/9999/approve", url.Values{"username": {"eric"}})
+
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 for a manifest that does not exist, got %d: %s", rr.Code, rr.Body.String())
+	}
+}
+
+func postDashboardForm(t *testing.T, s *Server, path string, form url.Values) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rr := httptest.NewRecorder()
+	s.ServeHTTP(rr, req)
+	return rr
+}
+
 // seedPendingManifest records one PENDING manifest for serverID (a single
 // tool, no prior baseline, so it's reported as an added-tool change) and
 // returns its manifest ID.

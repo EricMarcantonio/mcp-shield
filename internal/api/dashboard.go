@@ -166,14 +166,21 @@ func (s *Server) handleDashboardDecision(w http.ResponseWriter, r *http.Request,
 	if !ok {
 		return
 	}
-	_ = r.ParseForm()
-	username := r.FormValue("username")
-	if username == "" {
-		username = "dashboard"
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "invalid form body: "+err.Error(), http.StatusBadRequest)
+		return
 	}
-	reason := r.FormValue("reason")
-	if err := decide(r.Context(), id, username, reason); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+	// Same rule as the JSON API: a decision the gateway cannot attribute is
+	// refused rather than recorded under an invented identity. Both dashboard
+	// templates post an explicit username, so a form without one was
+	// hand-crafted.
+	username, err := attributableUsername(r.FormValue("username"))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if err := decide(r.Context(), id, username, r.FormValue("reason")); err != nil {
+		http.Error(w, err.Error(), statusForStoreError(err))
 		return
 	}
 	http.Redirect(w, r, "/", http.StatusSeeOther)

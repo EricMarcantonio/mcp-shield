@@ -28,6 +28,15 @@ All notable changes to mcp-shield are documented here. Format follows
   tagging; see README Install.
 
 ### Changed
+- **Breaking:** the approve/reject endpoints now require a non-empty
+  `username` and reject a malformed body with `400`. Previously a garbled
+  or absent body returned `200` and wrote the audit row under a fabricated
+  `"unknown"` identity. The CLI (`-username`, default `cli`) and the
+  dashboard already send one; hand-written `curl` calls that posted `{}`
+  must now pass `{"username":"..."}`.
+- The dashboard maps decision errors the same way the JSON API does:
+  `409` for a manifest that is no longer PENDING and `404` for one that
+  does not exist, instead of a blanket `500`.
 - `go install github.com/EricMarcantonio/mcp-shield/cmd/mcp-shield@latest` now
   installs a binary named `mcp-shield` (previously `cmd/gateway` produced a
   binary named `gateway`).

@@ -6,11 +6,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"html/template"
 	"log/slog"
 	"net/http"
 	"path/filepath"
 	"strconv"
+	"strings"
 
 	"github.com/EricMarcantonio/mcp-shield/internal/approval"
 	"github.com/EricMarcantonio/mcp-shield/internal/database"
@@ -161,17 +163,43 @@ func (s *Server) handleDecision(w http.ResponseWriter, r *http.Request, decide f
 		return
 	}
 	var body decisionRequest
-	if r.Body != nil {
-		_ = json.NewDecoder(r.Body).Decode(&body) // empty/absent body is fine, fields default to ""
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeJSONError(w, http.StatusBadRequest, fmt.Errorf("invalid JSON body: %w", err))
+		return
 	}
-	if body.Username == "" {
-		body.Username = "unknown"
+	username, err := attributableUsername(body.Username)
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, err)
+		return
 	}
-	if err := decide(r.Context(), id, body.Username, body.Reason); err != nil {
+	if err := decide(r.Context(), id, username, body.Reason); err != nil {
 		writeJSONNotFoundOr500(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"id": id, "ok": true})
+}
+
+// attributableUsername rejects a decision the gateway cannot attribute.
+//
+// The approvals table is the record of who authorized a capability change,
+// and it is the product here. An absent username used to be stored as
+// "unknown", which is indistinguishable in the audit trail from a real user
+// of that name and asserts something nobody supplied. The API is
+// unauthenticated by design (it is meant to be bound to localhost), so the
+// username is a caller-supplied attestation rather than a verified identity
+// — which is exactly why it must be supplied rather than invented: an
+// unverified claim on the record is still a claim someone made, whereas a
+// default is a claim the gateway made up.
+//
+// Every in-tree caller already sends one: the CLI defaults its -username
+// flag to "cli", the dashboard templates post a hidden username field, and
+// the documented curl examples pass one.
+func attributableUsername(raw string) (string, error) {
+	username := strings.TrimSpace(raw)
+	if username == "" {
+		return "", errors.New("username is required: an approval decision must be attributable to whoever made it")
+	}
+	return username, nil
 }
 
 func parseID(w http.ResponseWriter, r *http.Request) (int64, bool) {
@@ -194,12 +222,19 @@ func writeJSONError(w http.ResponseWriter, status int, err error) {
 }
 
 func writeJSONNotFoundOr500(w http.ResponseWriter, err error) {
+	writeJSONError(w, statusForStoreError(err), err)
+}
+
+// statusForStoreError maps the errors the store and approval workflow return
+// onto HTTP statuses. It is shared by the JSON API and the dashboard so the
+// same failure never reports differently depending on which surface asked.
+func statusForStoreError(err error) int {
 	switch {
 	case errors.Is(err, database.ErrNotFound):
-		writeJSONError(w, http.StatusNotFound, err)
+		return http.StatusNotFound
 	case errors.Is(err, approval.ErrNotPending):
-		writeJSONError(w, http.StatusConflict, err)
+		return http.StatusConflict
 	default:
-		writeJSONError(w, http.StatusInternalServerError, err)
+		return http.StatusInternalServerError
 	}
 }

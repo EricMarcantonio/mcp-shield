@@ -162,9 +162,11 @@ func TestApproveAndRejectFlow(t *testing.T) {
 		t.Fatalf("expected empty pending list after approval, got %v", rows)
 	}
 
-	// re-approving the same (now APPROVED) manifest should 409
+	// re-approving the same (now APPROVED) manifest should 409. The body
+	// carries a username because an unattributable decision is refused with
+	// a 400 before the manifest's state is ever consulted.
 	rr = httptest.NewRecorder()
-	req = httptest.NewRequest(http.MethodPost, "/api/manifests/"+itoa(id)+"/approve", strings.NewReader(`{}`))
+	req = httptest.NewRequest(http.MethodPost, "/api/manifests/"+itoa(id)+"/approve", strings.NewReader(`{"username":"eric"}`))
 	s.ServeHTTP(rr, req)
 	if rr.Code != http.StatusConflict {
 		t.Fatalf("expected 409 re-approving an approved manifest, got %d", rr.Code)
@@ -196,47 +198,86 @@ func TestRejectNonPendingConflicts(t *testing.T) {
 	}
 
 	rr := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/api/manifests/"+itoa(id)+"/reject", strings.NewReader(`{}`))
+	req := httptest.NewRequest(http.MethodPost, "/api/manifests/"+itoa(id)+"/reject", strings.NewReader(`{"username":"eric"}`))
 	s.ServeHTTP(rr, req)
 	if rr.Code != http.StatusConflict {
 		t.Fatalf("expected 409 re-rejecting an already-rejected manifest, got %d", rr.Code)
 	}
 }
 
-// TestApproveMalformedJSONBodyStillSucceedsWithFabricatedIdentity pins a
-// known bug (design doc finding C4, internal/api/handlers.go:163-169):
-// handleDecision ignores the JSON decoder's error entirely
-// (`_ = json.NewDecoder(r.Body).Decode(&body)`), so a malformed request body
-// doesn't fail the request — it just leaves body.Username empty, which
-// handleDecision then silently fills in as "unknown". For a tool whose
-// product is the audit trail, a garbled approval request should be a 400,
-// not a 200 recorded under a fabricated identity. Not fixed here — Phase 5
-// owns it. This test documents today's actual behavior so the fix in
-// Phase 5 has something concrete to change.
-func TestApproveMalformedJSONBodyStillSucceedsWithFabricatedIdentity(t *testing.T) {
+// TestDecisionBodiesThatMustNotBeRecorded guards the fix for design doc
+// finding C4. handleDecision used to ignore the JSON decoder's error
+// entirely and then fill an empty username in as "unknown", so a garbled
+// approval request returned 200 and wrote an audit row under an identity
+// nobody supplied. The approvals table is the record of who authorized a
+// capability change; a decision the gateway cannot attribute must be
+// refused, not attributed to an invented user.
+func TestDecisionBodiesThatMustNotBeRecorded(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+	}{
+		{"malformed json", `{not json`},
+		{"truncated json", `{"username": 42`},
+		{"wrong type for username", `{"username": 42}`},
+		{"absent username", `{}`},
+		{"empty body", ``},
+		{"blank username", `{"username":"   "}`},
+	}
+	for _, tc := range cases {
+		for _, decision := range []string{"approve", "reject"} {
+			t.Run(tc.name+"/"+decision, func(t *testing.T) {
+				s, store, wf, serverID := newTestServer(t)
+				ctx := context.Background()
+
+				res, err := wf.CheckAndRecord(ctx, serverID, mustBuild(t, []mcp.Tool{{Name: "calendar_read"}}))
+				if err != nil {
+					t.Fatalf("check and record: %v", err)
+				}
+
+				rr := httptest.NewRecorder()
+				req := httptest.NewRequest(http.MethodPost,
+					"/api/manifests/"+itoa(res.ManifestID)+"/"+decision, strings.NewReader(tc.body))
+				s.ServeHTTP(rr, req)
+
+				if rr.Code != http.StatusBadRequest {
+					t.Fatalf("expected 400 for an unattributable decision, got %d: %s", rr.Code, rr.Body.String())
+				}
+				history, err := store.ListApprovalsForManifest(ctx, res.ManifestID)
+				if err != nil {
+					t.Fatalf("list approvals: %v", err)
+				}
+				if len(history) != 0 {
+					t.Fatalf("a refused decision must leave no audit row, got %+v", history)
+				}
+			})
+		}
+	}
+}
+
+func TestApproveRecordsSuppliedUsernameVerbatim(t *testing.T) {
 	s, store, wf, serverID := newTestServer(t)
 	ctx := context.Background()
 
-	m := mustBuild(t, []mcp.Tool{{Name: "calendar_read"}})
-	res, err := wf.CheckAndRecord(ctx, serverID, m)
+	res, err := wf.CheckAndRecord(ctx, serverID, mustBuild(t, []mcp.Tool{{Name: "calendar_read"}}))
 	if err != nil {
 		t.Fatalf("check and record: %v", err)
 	}
 
 	rr := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/api/manifests/"+itoa(res.ManifestID)+"/approve", strings.NewReader(`{not json`))
+	req := httptest.NewRequest(http.MethodPost, "/api/manifests/"+itoa(res.ManifestID)+"/approve",
+		strings.NewReader(`{"username":"alice","reason":"reviewed the diff"}`))
 	s.ServeHTTP(rr, req)
 
 	if rr.Code != http.StatusOK {
-		t.Fatalf("known-bug pin broke: expected today's behavior (200 despite malformed body), got %d: %s", rr.Code, rr.Body.String())
+		t.Fatalf("expected 200, got %d: %s", rr.Code, rr.Body.String())
 	}
-
 	history, err := store.ListApprovalsForManifest(ctx, res.ManifestID)
 	if err != nil {
 		t.Fatalf("list approvals: %v", err)
 	}
-	if len(history) != 1 || history[0].Username != "unknown" {
-		t.Fatalf("known-bug pin broke: expected a decision fabricated under username \"unknown\", got %+v", history)
+	if len(history) != 1 || history[0].Username != "alice" || history[0].Reason != "reviewed the diff" {
+		t.Fatalf("expected the supplied identity recorded verbatim, got %+v", history)
 	}
 }
 

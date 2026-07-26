@@ -59,10 +59,35 @@ cd mcp-shield
 make build   # -> bin/mcp-shield, bin/mcp-shield-testserver
 ```
 
-`go install github.com/EricMarcantonio/mcp-shield/cmd/mcp-shield@latest`
-and prebuilt release binaries will work once the project cuts its first
-tagged release (tracked in `CHANGELOG.md`); until then that path doesn't
-resolve.
+Once the first tag (`v0.1.0`) is pushed, `.github/workflows/release.yml`
+(GoReleaser) will publish, for every `vX.Y.Z` tag:
+
+- Cross-compiled `mcp-shield` archives for linux/darwin/windows ×
+  amd64/arm64, plus checksums, attached to a GitHub Release.
+- A multi-arch (amd64+arm64) Docker image at
+  `ghcr.io/ericmarcantonio/mcp-shield:X.Y.Z` (and `:latest`).
+
+**Neither of those is usable yet, and this section will keep saying so
+until both conditions below are true — do not treat the commands below as
+currently working:**
+
+```sh
+# Will work once the repo is public AND a tag has shipped. Today it 404s.
+go install github.com/EricMarcantonio/mcp-shield/cmd/mcp-shield@latest
+
+# Will work once the repo is public, a tag has shipped, AND the ghcr
+# package's own visibility has been separately flipped to public (package
+# visibility does not follow repo visibility automatically). Today: no tag,
+# no public package — this will fail.
+docker pull ghcr.io/ericmarcantonio/mcp-shield:latest
+```
+
+This repository is currently **private**. That alone blocks anonymous
+`go install`, blocks anonymous `docker pull` against ghcr, and is why the
+badges at the top of this file won't render for anyone without repo
+access. None of that is a release-engineering bug — it's a consequence of
+visibility, and it resolves the moment the repo (and separately, the ghcr
+package) go public.
 
 ## Quickstart (Docker)
 

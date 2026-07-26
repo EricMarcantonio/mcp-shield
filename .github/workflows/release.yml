@@ -77,3 +77,62 @@ jobs:
             dist/*.tar.gz
             dist/*.zip
             dist/checksums.txt
+
+  # Packages charts/mcp-shield and pushes it as an OCI artifact to GHCR,
+  # right alongside the Docker image this same tag already publishes.
+  # OCI rather than a GitHub Pages `helm repo add`-style index: GHCR is
+  # already the registry this workflow authenticates to with GITHUB_TOKEN
+  # (see the goreleaser job above), so this reuses that trust boundary
+  # instead of standing up a second, differently-authenticated publishing
+  # path just for chart artifacts. `helm install
+  # oci://ghcr.io/ericmarcantonio/charts/mcp-shield --version X.Y.Z` needs
+  # no `helm repo add` step first, unlike a Pages-hosted index.
+  #
+  # Runs after `goreleaser`, not in parallel with it: the chart's
+  # `image.tag` default resolves to `Chart.appVersion`, i.e. this exact
+  # tag, so publishing the chart before the image it points at exists
+  # would let an install briefly resolve to a nonexistent image tag.
+  helm-chart:
+    needs: goreleaser
+    runs-on: ubuntu-latest
+    permissions:
+      packages: write # push the chart OCI artifact to ghcr.io
+      id-token: write # OIDC token used to sign the chart's provenance attestation
+      attestations: write # record the chart's SLSA provenance attestation
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: v4.2.3
+
+      # Chart.yaml's `version`/`appVersion` fields are a placeholder
+      # (0.0.0-placeholder) checked into the repo -- `helm package
+      # --version --app-version` overrides both at pack time from the
+      # same $GITHUB_REF_NAME that triggered this workflow, so the chart
+      # version, the app version it deploys, and the git tag can never
+      # drift apart from each other. Nothing in charts/mcp-shield/Chart.yaml
+      # needs hand-editing for a release.
+      - name: Package chart
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          helm lint charts/mcp-shield
+          helm package charts/mcp-shield \
+            --version "$version" \
+            --app-version "$version" \
+            --destination dist-chart
+
+      - name: Log in to GHCR
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ghcr.io \
+            --username ${{ github.actor }} --password-stdin
+
+      - name: Push chart to GHCR
+        run: |
+          set -euo pipefail
+          helm push dist-chart/mcp-shield-*.tgz oci://ghcr.io/ericmarcantonio/charts
+
+      - name: Attest chart provenance
+        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
+        with:
+          subject-path: dist-chart/mcp-shield-*.tgz

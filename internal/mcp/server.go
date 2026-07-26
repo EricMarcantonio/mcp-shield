@@ -44,17 +44,40 @@ type Gate interface {
 	CheckAndRecord(ctx context.Context, serverName string, tools []Tool, prompts []Prompt, resources []Resource) (*GateDecision, error)
 }
 
+// upstream is the subset of *UpstreamClient that serverSession depends on.
+// It exists so tests can substitute a fake upstream without spawning a real
+// subprocess; *UpstreamClient satisfies it unmodified.
+type upstream interface {
+	Initialize(ctx context.Context) (*InitializeResult, error)
+	ListTools(ctx context.Context) ([]Tool, error)
+	ListPrompts(ctx context.Context) ([]Prompt, error)
+	ListResources(ctx context.Context) ([]Resource, error)
+	CallTool(ctx context.Context, name string, args json.RawMessage) (*CallToolResult, error)
+	Call(ctx context.Context, method string, params any) (*Response, error)
+	Close() error
+}
+
+// upstreamFactory constructs the upstream connection for a serverSession.
+// Production code always uses stdioUpstreamFactory; tests substitute a
+// factory that returns a fake.
+type upstreamFactory func(ctx context.Context, cfg ServerConfig) (upstream, error)
+
+func stdioUpstreamFactory(ctx context.Context, cfg ServerConfig) (upstream, error) {
+	return NewStdioUpstreamClient(ctx, cfg.Command, cfg.Args, cfg.Env)
+}
+
 // serverSession holds the lazily-started upstream connection for one
 // configured server.
 type serverSession struct {
-	cfg ServerConfig
+	cfg       ServerConfig
+	newClient upstreamFactory
 
 	mu     sync.Mutex
-	client *UpstreamClient
+	client upstream
 	inited bool
 }
 
-func (s *serverSession) ensureStarted(ctx context.Context) (*UpstreamClient, error) {
+func (s *serverSession) ensureStarted(ctx context.Context) (upstream, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.client == nil {
@@ -63,7 +86,7 @@ func (s *serverSession) ensureStarted(ctx context.Context) (*UpstreamClient, err
 		// so it's started against context.Background(), not the
 		// request's context, which would otherwise kill the process the
 		// moment this request's context is done.
-		c, err := NewStdioUpstreamClient(context.Background(), s.cfg.Command, s.cfg.Args, s.cfg.Env)
+		c, err := s.newClient(context.Background(), s.cfg)
 		if err != nil {
 			return nil, err
 		}
@@ -94,7 +117,7 @@ type DownstreamHandler struct {
 func NewDownstreamHandler(cfg []ServerConfig, gate Gate) (*DownstreamHandler, error) {
 	h := &DownstreamHandler{servers: make(map[string]*serverSession, len(cfg)), gate: gate}
 	for _, c := range cfg {
-		h.servers[c.Name] = &serverSession{cfg: c}
+		h.servers[c.Name] = &serverSession{cfg: c, newClient: stdioUpstreamFactory}
 	}
 	return h, nil
 }

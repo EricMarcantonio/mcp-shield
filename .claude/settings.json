@@ -2,11 +2,11 @@
   "hooks": {
     "PreToolUse": [
       {
-        "matcher": "Bash|Grep",
+        "matcher": "Grep",
         "hooks": [
           {
             "type": "command",
-            "command": "/Users/eric/.local/bin/graphify hook-guard search"
+            "command": "graphify hook-guard search"
           }
         ]
       },
@@ -15,7 +15,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/Users/eric/.local/bin/graphify hook-guard read"
+            "command": "graphify hook-guard read"
           }
         ]
       }

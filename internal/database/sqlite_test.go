@@ -3,6 +3,8 @@ package database
 import (
 	"context"
 	"errors"
+	"io/fs"
+	"os"
 	"path/filepath"
 	"testing"
 )
@@ -16,6 +18,61 @@ func openTestStore(t *testing.T) *SQLiteStore {
 	}
 	t.Cleanup(func() { _ = store.Close() })
 	return store
+}
+
+// TestOpenCreatesMissingParentDirectory covers first launch on a clean
+// machine. DATABASE_PATH defaults to "data/mcp.db" and nothing created
+// "data/", so a release binary or container started in a fresh directory
+// died on the first PRAGMA with "unable to open database file (14)". It was
+// masked in development because docker-compose bind-mounts a volume over
+// /app/data and the repo has a committed data/ directory.
+func TestOpenCreatesMissingParentDirectory(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "data", "mcp.db")
+
+	store, err := Open(path)
+	if err != nil {
+		t.Fatalf("open with a missing parent directory: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	if _, err := store.CreateServer(context.Background(), "calendar", ""); err != nil {
+		t.Fatalf("store unusable after creating its directory: %v", err)
+	}
+}
+
+// TestOpenCreatesPrivateDirectory pins the permission bits. This directory
+// holds the approvals audit trail — the record of who authorized which
+// capability change — so it is not an ordinary cache directory that other
+// local users may read.
+func TestOpenCreatesPrivateDirectory(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "nested", "data")
+	store, err := Open(filepath.Join(dir, "mcp.db"))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	info, err := os.Stat(dir)
+	if err != nil {
+		t.Fatalf("stat created directory: %v", err)
+	}
+	if perm := info.Mode().Perm(); perm != fs.FileMode(0o700) {
+		t.Fatalf("expected the audit database directory to be private (0700), got %#o", perm)
+	}
+}
+
+// TestOpenAcceptsPathsWithoutADirectoryComponent covers a bare filename and
+// SQLite's in-memory DSNs, none of which name a directory to create.
+func TestOpenAcceptsPathsWithoutADirectoryComponent(t *testing.T) {
+	for _, path := range []string{":memory:", "file::memory:", "file::memory:?cache=shared"} {
+		t.Run(path, func(t *testing.T) {
+			store, err := Open(path)
+			if err != nil {
+				t.Fatalf("open %q: %v", path, err)
+			}
+			_ = store.Close()
+		})
+	}
 }
 
 func TestServerCRUD(t *testing.T) {

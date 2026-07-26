@@ -27,6 +27,22 @@ All notable changes to mcp-shield are documented here. Format follows
   ghcr.io/ericmarcantonio/mcp-shield` do not work yet regardless of
   tagging; see README Install.
 
+### Fixed
+- mcp-shield could not start on a clean machine: `DATABASE_PATH` defaults to
+  `data/mcp.db` and nothing created `data/`, so a release binary or the
+  published container started in a fresh directory exited with
+  `unable to open database file (14)`. `database.Open` now creates the
+  parent directory (mode `0700` — it holds the approvals audit trail) and
+  warns if a pre-existing directory is readable by other users.
+- A dead upstream is respawned instead of being reused forever, and
+  `dispatchLoop` no longer hangs when the transport's error channel drains
+  before its frame channel.
+- `manifest.Build` rejects capability sets that advertise the same tool
+  name, prompt name, or resource URI twice; such a set previously produced
+  an order-dependent manifest hash.
+- Diffs and the dashboard now show changed prompts and changed resources,
+  which were silently omitted from both.
+
 ### Changed
 - **Breaking:** the approve/reject endpoints now require a non-empty
   `username` and reject a malformed body with `400`. Previously a garbled

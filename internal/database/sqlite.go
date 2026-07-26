@@ -5,6 +5,11 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"io/fs"
+	"log/slog"
+	"os"
+	"path/filepath"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite" // registers the "sqlite" database/sql driver
@@ -84,9 +89,21 @@ type SQLiteStore struct {
 	db *sql.DB
 }
 
+// dbDirPerm is the mode of the directory holding the database. 0700, not
+// 0750: this database is the approvals audit trail — the record of who
+// authorized which capability change — so no group or other user has any
+// business reading it or the WAL and shared-memory files SQLite writes
+// beside it.
+const dbDirPerm fs.FileMode = 0o700
+
 // Open opens (creating if necessary) a SQLite database at path, applies the
-// schema, and configures WAL journaling and foreign keys.
+// schema, and configures WAL journaling and foreign keys. The parent
+// directory is created if it does not exist.
 func Open(path string) (*SQLiteStore, error) {
+	if err := ensureParentDir(path); err != nil {
+		return nil, err
+	}
+
 	db, err := sql.Open("sqlite", path)
 	if err != nil {
 		return nil, fmt.Errorf("database: open: %w", err)
@@ -109,6 +126,49 @@ func Open(path string) (*SQLiteStore, error) {
 		return nil, fmt.Errorf("database: apply schema: %w", err)
 	}
 	return &SQLiteStore{db: db}, nil
+}
+
+// ensureParentDir creates the directory holding the database file. It lives
+// here rather than in main so every entry point benefits: a release binary or
+// container starting in a fresh directory used to die on the first PRAGMA
+// with "unable to open database file (14)", because the default
+// DATABASE_PATH is "data/mcp.db" and nothing created "data/".
+//
+// Paths that name no directory are left alone: a bare filename, and SQLite's
+// in-memory DSNs (":memory:", "file::memory:...") which are not filesystem
+// paths at all.
+func ensureParentDir(path string) error {
+	if isInMemoryDSN(path) {
+		return nil
+	}
+	dir := filepath.Dir(path)
+	if dir == "." || dir == string(filepath.Separator) {
+		return nil
+	}
+	if err := os.MkdirAll(dir, dbDirPerm); err != nil {
+		return fmt.Errorf("database: create directory %q: %w", dir, err)
+	}
+	warnIfDirectoryIsWorldReadable(dir)
+	return nil
+}
+
+func isInMemoryDSN(path string) bool {
+	return path == ":memory:" || strings.HasPrefix(path, "file::memory:")
+}
+
+// warnIfDirectoryIsWorldReadable reports a pre-existing directory that other
+// local users can read. MkdirAll leaves an existing directory's mode alone,
+// and silently tightening a directory an operator deliberately created would
+// be a surprise — so this warns instead of changing it or refusing to start.
+func warnIfDirectoryIsWorldReadable(dir string) {
+	info, err := os.Stat(dir)
+	if err != nil {
+		return
+	}
+	if perm := info.Mode().Perm(); perm&0o077 != 0 {
+		slog.Warn("database directory is readable by other users; it holds the approvals audit trail",
+			"dir", dir, "mode", fmt.Sprintf("%#o", perm), "recommended", fmt.Sprintf("%#o", dbDirPerm))
+	}
 }
 
 func (s *SQLiteStore) Close() error { return s.db.Close() }

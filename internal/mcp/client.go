@@ -3,7 +3,10 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
+	"log/slog"
 	"sync"
 	"sync/atomic"
 )
@@ -37,35 +40,56 @@ func NewStdioUpstreamClient(ctx context.Context, cmdPath string, args, env []str
 	return c, nil
 }
 
+// dispatchLoop routes upstream responses to their waiting callers until the
+// transport shuts down, then fails every in-flight call with the transport's
+// terminal error.
+//
+// Termination is expressed in the loop condition, not checked inside the
+// body. An earlier version drained a channel, set it to nil and `continue`d
+// past a terminal check placed at the bottom of the body, so whenever errs
+// was drained before frames the next select blocked on two nil channels with
+// no ready case — the goroutine leaked, failAllPending never ran, and every
+// pending caller waited until its own context expired. That was the common
+// case, not a rare race: StdioTransport.readLoop's LIFO defers close errs
+// before frames on every clean shutdown.
 func (c *UpstreamClient) dispatchLoop() {
 	frames, errs := c.transport.Recv()
-	for {
+	var terminal error
+	for frames != nil || errs != nil {
 		select {
 		case frame, ok := <-frames:
 			if !ok {
 				frames = nil
 				continue
 			}
-			var resp Response
-			if err := json.Unmarshal(frame, &resp); err != nil {
-				continue
-			}
-			c.deliver(&resp)
+			c.dispatchFrame(frame)
 		case err, ok := <-errs:
 			if !ok {
 				errs = nil
+				continue
 			}
-			_ = err
-			if frames == nil && errs == nil {
-				c.failAllPending(fmt.Errorf("upstream transport closed"))
-				return
+			if err != nil {
+				terminal = err
 			}
-		}
-		if frames == nil && errs == nil {
-			c.failAllPending(fmt.Errorf("upstream transport closed"))
-			return
 		}
 	}
+
+	// io.EOF is how a healthy upstream's stdout reports a clean exit; it
+	// carries no more information than "closed" and reads as noise in a log.
+	if terminal == nil || errors.Is(terminal, io.EOF) {
+		terminal = errors.New("transport closed")
+	}
+	slog.Warn("upstream transport terminated", "error", terminal)
+	c.failAllPending(fmt.Errorf("upstream: %w", terminal))
+}
+
+func (c *UpstreamClient) dispatchFrame(frame []byte) {
+	var resp Response
+	if err := json.Unmarshal(frame, &resp); err != nil {
+		slog.Warn("upstream sent undecodable frame", "error", err)
+		return
+	}
+	c.deliver(&resp)
 }
 
 func (c *UpstreamClient) deliver(resp *Response) {

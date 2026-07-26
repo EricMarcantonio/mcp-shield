@@ -35,25 +35,19 @@ func (t *fakeTransport) Close() error {
 	return nil
 }
 
-// shutdownFramesThenErrs closes frames alone first. Because errs is still
-// open (and never receives a value), dispatchLoop's select has exactly one
-// ready case, so it deterministically takes the frames branch first, then
-// blocks again waiting on errs alone — no tie-break is possible. Once that
-// settles (spinYield gives the goroutine the chance to run; there is
-// nothing else for it to do), closing errs is likewise the only ready
-// case. This forces the ordering that does NOT trigger the client.go:47
-// bug (see TestCallAfterTransportShutdownFails).
-func (t *fakeTransport) shutdownFramesThenErrs() {
+// shutdown closes both channels back-to-back, leaving the ordering
+// dispatchLoop observes up to the scheduler — the unordered shutdown a real
+// upstream produces. dispatchLoop must terminate either way.
+func (t *fakeTransport) shutdown() {
 	close(t.frames)
-	spinYield()
 	close(t.errs)
 }
 
-// shutdownErrsThenFrames is the mirror image: closing errs alone first,
-// then frames, deterministically forces dispatchLoop to process the errs
-// close before the frames close — the exact ordering that hits the
-// client.go:47 `continue` and skips the terminal check, livelocking the
-// goroutine forever (see TestDispatchLoopLivelocksWhenErrsClosesBeforeFrames).
+// shutdownErrsThenFrames closes errs alone first, then frames. Because only
+// one channel is ready at a time, this deterministically forces dispatchLoop
+// to drain errs before frames — the ordering that used to livelock it, and
+// the one StdioTransport's LIFO defers produce on every real shutdown (see
+// TestDispatchLoopTerminatesWhenErrsClosesBeforeFrames).
 func (t *fakeTransport) shutdownErrsThenFrames() {
 	close(t.errs)
 	spinYield()
@@ -159,12 +153,13 @@ func TestTransportShutdownFailsPending(t *testing.T) {
 
 	// Make sure the request has actually been sent (and is therefore
 	// pending) before shutting the transport down, otherwise there is
-	// nothing to fail. Use the deterministic close ordering (frames then
-	// errs) rather than closing both channels back-to-back — the latter
-	// hits a dispatchLoop tie-break that livelocks about half the time;
-	// see TestDispatchLoopLivelocksWhenErrsClosesBeforeFrames.
+	// nothing to fail.
 	<-ft.sent
-	ft.shutdownFramesThenErrs()
+	// The terminal transport error must reach the caller: an operator
+	// reading a failed tool call has to be able to tell "upstream crashed"
+	// from "upstream idle".
+	ft.errs <- errors.New("pipe burst")
+	ft.shutdown()
 
 	select {
 	case resp := <-respCh:
@@ -178,8 +173,8 @@ func TestTransportShutdownFailsPending(t *testing.T) {
 		if resp.Error.Code != CodeUpstreamError {
 			t.Fatalf("expected CodeUpstreamError, got %d", resp.Error.Code)
 		}
-		if !strings.Contains(resp.Error.Message, "closed") {
-			t.Fatalf("expected error message to mention the transport closing, got %q", resp.Error.Message)
+		if !strings.Contains(resp.Error.Message, "pipe burst") {
+			t.Fatalf("expected the underlying transport error to be preserved, got %q", resp.Error.Message)
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("pending call was not failed within 2s of transport shutdown")
@@ -188,34 +183,11 @@ func TestTransportShutdownFailsPending(t *testing.T) {
 
 func TestCallAfterTransportShutdownFails(t *testing.T) {
 	c, ft := newClientWithFake(t)
-	// Deterministic ordering: see shutdownFramesThenErrs. Closing both
-	// channels back-to-back instead would make this test flaky — it hits
-	// the same tie-break as TestDispatchLoopLivelocksWhenErrsClosesBeforeFrames
-	// roughly half the time, in which case dispatchLoop never marks the
-	// client closed at all.
-	ft.shutdownFramesThenErrs()
+	// Unordered shutdown: which channel dispatchLoop drains first is up to
+	// the scheduler, and it must terminate either way.
+	ft.shutdown()
 
-	// Closed() does not exist yet (that's Phase 5 Task 17), so there is no
-	// channel to select on for "dispatchLoop has observed the shutdown".
-	// Busy-poll the internal flag directly (whitebox, same package) instead
-	// of sleeping a fixed duration or repeatedly calling Call — repeated
-	// Call attempts would each enqueue a Send, and nothing here drains
-	// fakeTransport.sent, so that path fills the channel and deadlocks.
-	deadline := time.After(2 * time.Second)
-	for {
-		c.mu.Lock()
-		closed := c.closed
-		c.mu.Unlock()
-		if closed {
-			break
-		}
-		select {
-		case <-deadline:
-			t.Fatal("client never observed transport shutdown within 2s")
-		default:
-			runtime.Gosched()
-		}
-	}
+	waitClosed(t, c)
 
 	_, err := c.Call(context.Background(), "ping", nil)
 	if err == nil || !strings.Contains(err.Error(), "closed") {
@@ -223,53 +195,47 @@ func TestCallAfterTransportShutdownFails(t *testing.T) {
 	}
 }
 
-// TestDispatchLoopLivelocksWhenErrsClosesBeforeFrames documents a concurrency
-// bug found while writing the tests above, sharper than what the design doc's
-// finding C1 (internal/mcp/client.go:40-69) describes: dispatchLoop doesn't
-// just have a diagnosability gap, it can hang forever.
+// TestDispatchLoopTerminatesWhenErrsClosesBeforeFrames guards the fix for a
+// permanent hang. dispatchLoop used to set the drained channel to nil and
+// `continue` past a terminal check placed at the *bottom* of the loop body,
+// so if errs was drained before frames the next select blocked on two nil
+// channels with no ready case: the goroutine leaked, failAllPending never
+// ran, and every in-flight caller waited until its own context expired
+// rather than failing fast.
 //
-// The frames case's zero-value branch (client.go:45-48) unconditionally
-// `continue`s past the terminal check at the bottom of the loop
-// (client.go:64-67); the errs case's zero-value branch (54-57) does not. So
-// if the errs channel's close is processed *before* the frames channel's,
-// dispatchLoop never notices both are closed: the next select has both
-// local channel variables nil and blocks forever with no ready case. This
-// happens whenever a real upstream's stdout EOF and process-exit races
-// against gateway shutdown and Go's select tie-break picks errs first —
-// empirically about half the time (23/50 in an unmodified stress run of
-// TestCallAfterCloseFails against ft.shutdown(), before that test was
-// rewritten above to force the non-buggy ordering deterministically).
+// This was not a rare tie-break. StdioTransport.readLoop registers
+// `defer close(t.frames)` before `defer close(t.errs)`, and defers run LIFO,
+// so a real upstream shutting down closes errs *first* every time — the
+// buggy ordering was the production ordering.
 //
-// Effect: the dispatchLoop goroutine leaks forever, UpstreamClient.closed
-// is never set, and any Call made after this point blocks until its
-// context deadline instead of failing fast with "upstream client closed" —
-// an availability and diagnosability regression on top of C2 (dead
-// upstream never recovers) that Phase 5 should fix together.
-//
-// Do not fix here — Phase 5 owns C1. This test forces the exact ordering
-// deterministically (see shutdownErrsThenFrames) and asserts the current,
-// buggy, non-terminating behavior; it is intentionally skipped so CI does
-// not spend a fixed 200ms on every run and does not need to special-case a
-// "test that passes by proving a hang."
-func TestDispatchLoopLivelocksWhenErrsClosesBeforeFrames(t *testing.T) {
-	t.Skip("documents a known bug (design doc C1 / client.go:40-69); fix owned by Phase 5, see comment above")
-
+// Termination now lives in the loop condition instead of the body, so it is
+// checked on every path. This test forces the once-fatal ordering
+// deterministically (see shutdownErrsThenFrames).
+func TestDispatchLoopTerminatesWhenErrsClosesBeforeFrames(t *testing.T) {
 	c, ft := newClientWithFake(t)
 	ft.shutdownErrsThenFrames()
 
-	deadline := time.After(200 * time.Millisecond)
+	waitClosed(t, c)
+}
+
+// waitClosed blocks until dispatchLoop has observed the transport shutting
+// down and marked the client closed. It polls the internal flag (whitebox,
+// same package) rather than sleeping a fixed duration or retrying Call —
+// each Call attempt enqueues a Send, and nothing drains fakeTransport.sent,
+// so that path fills the channel and deadlocks.
+func waitClosed(t *testing.T, c *UpstreamClient) {
+	t.Helper()
+	deadline := time.After(2 * time.Second)
 	for {
 		c.mu.Lock()
 		closed := c.closed
 		c.mu.Unlock()
 		if closed {
-			t.Fatal("dispatchLoop marked the client closed — the C1 livelock appears to be fixed; " +
-				"remove this test (and update TestCallAfterTransportShutdownFails if it no longer needs " +
-				"the deterministic ordering workaround)")
+			return
 		}
 		select {
 		case <-deadline:
-			return // bug reproduced: dispatchLoop never terminates in this ordering.
+			t.Fatal("dispatchLoop never observed the transport shutdown within 2s")
 		default:
 			runtime.Gosched()
 		}

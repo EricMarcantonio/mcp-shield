@@ -20,9 +20,11 @@ type fakeUpstream struct {
 func (f *fakeUpstream) Initialize(ctx context.Context) (*InitializeResult, error) {
 	return &InitializeResult{ProtocolVersion: "2024-11-05"}, nil
 }
-func (f *fakeUpstream) ListTools(ctx context.Context) ([]Tool, error)         { return f.tools, nil }
-func (f *fakeUpstream) ListPrompts(ctx context.Context) ([]Prompt, error)     { return f.prompts, nil }
-func (f *fakeUpstream) ListResources(ctx context.Context) ([]Resource, error) { return f.resources, nil }
+func (f *fakeUpstream) ListTools(ctx context.Context) ([]Tool, error)     { return f.tools, nil }
+func (f *fakeUpstream) ListPrompts(ctx context.Context) ([]Prompt, error) { return f.prompts, nil }
+func (f *fakeUpstream) ListResources(ctx context.Context) ([]Resource, error) {
+	return f.resources, nil
+}
 func (f *fakeUpstream) CallTool(ctx context.Context, name string, args json.RawMessage) (*CallToolResult, error) {
 	return &CallToolResult{Content: []ContentBlock{{Type: "text", Text: "ok: " + name}}}, nil
 }

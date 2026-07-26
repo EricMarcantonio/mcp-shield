@@ -76,6 +76,21 @@ func TestCanonicalizePrimitiveArraySorted(t *testing.T) {
 	}
 }
 
+// TestCanonicalizeValueSortsObjectKeys pins an invariant the manifest hash
+// rests on but no code in this package enforces: encoding/json marshals
+// map[string]any keys in sorted order. It passes today; it exists so that if
+// a future encoder change stops sorting, this fails loudly instead of
+// silently making the hash depend on map iteration order.
+func TestCanonicalizeValueSortsObjectKeys(t *testing.T) {
+	out, err := CanonicalizeValue(json.RawMessage(`{"z":1,"m":{"b":2,"a":3},"a":4}`))
+	if err != nil {
+		t.Fatalf("canonicalize: %v", err)
+	}
+	if out != `{"a":4,"m":{"a":3,"b":2},"z":1}` {
+		t.Fatalf("object keys not sorted: %s", out)
+	}
+}
+
 func TestCanonicalizeNoWhitespace(t *testing.T) {
 	m := mustBuild(t, []mcp.Tool{{Name: "t"}})
 	out, err := Canonicalize(m)

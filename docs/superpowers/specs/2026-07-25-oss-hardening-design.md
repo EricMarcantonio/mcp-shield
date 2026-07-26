@@ -1,7 +1,8 @@
 # mcp-shield OSS Hardening — Design Document
 
 Date: 2026-07-25
-Status: awaiting user confirmation on Decisions D1–D6 (everything else is executable as written)
+Status: D1, D4, D5, D6, D7 decided; **D2 and D3 still awaiting confirmation** (they gate
+Phases 8 and 9 respectively; everything else is executable as written)
 Companion plan: `docs/superpowers/plans/2026-07-25-oss-hardening.md`
 
 Goal: turn the working MVP into a professional open-source project that 10,000 people
@@ -14,18 +15,59 @@ from you" and the corresponding plan phase is gated on it.
 
 ---
 
-## Decisions needed from you
+## Decisions made
+
+| # | Decision | Resolution | Date |
+|---|----------|------------|------|
+| D1 | License | **Apache-2.0**, as recommended. Landed in Phase 1. | 2026-07-25 |
+| D4 | Container registry | **`ghcr.io/ericmarcantonio/mcp-shield`**, as recommended. | 2026-07-25 |
+| D5 | Coverage floor | **70%** on `./internal/...`, as recommended. | 2026-07-25 |
+| D6 | `cmd/` renames | **Yes**, as recommended. Executing in Phase 6. | 2026-07-25 |
+| D7 | Target protocol version | **`2025-11-25` only, for now.** See below. | 2026-07-25 |
+
+### D7 — Target protocol version
+
+The codebase hardcodes `2024-11-05` in three places (finding S7) and performs no
+version negotiation. Verified against modelcontextprotocol.io on 2026-07-25:
+
+- **`2025-11-25` is the current stable revision.**
+- The **`2026-07-28` release candidate is published**, with the final
+  specification shipping 2026-07-28. It removes the
+  `initialize`/`notifications/initialized` handshake in favour of a stateless
+  core, carrying protocol version, client identity, and client capabilities in
+  `_meta` on every request. Beta SDKs (Python, TypeScript, Go, C#) exist.
+
+**Decision: move to `2025-11-25` only. Do not implement multi-version
+negotiation yet, and do not build to the RC.**
+
+Rationale: deployed MCP clients speak `2025-11-25` and will for some time. The
+version work gets done once now against a stable spec, and once later against a
+*finalized* `2026-07-28` with a stable Go SDK — rather than twice against a
+moving RC.
+
+Consequences for implementation:
+
+- Phase 5 replaces the three hardcoded `2024-11-05` constants with `2025-11-25`.
+- The `initialize` handshake still exists in `2025-11-25`, so the current
+  "initialize is never gated" design remains valid and unchanged.
+- **Do not bake session-forever assumptions into the transport seam.** The RC's
+  direction is stateless, and mcp-shield's existing design — re-fetch and
+  re-gate on every call, with no already-approved-this-session shortcut — is
+  already aligned with it. Preserve that property.
+- Revisit after `2026-07-28` finalizes and the client ecosystem moves. At that
+  point the question becomes multi-version negotiation, which the spec requires
+  (clients and servers MAY support multiple versions but MUST agree on one).
+
+---
+
+## Decisions still needed from you
 
 These block specific plan phases. Everything else proceeds without you.
 
 | # | Decision | Options | Recommendation | Blocks |
 |---|----------|---------|----------------|--------|
-| D1 | License | Apache-2.0 / MIT | **Apache-2.0** — explicit patent grant matters for security infrastructure that companies will run in front of AI clients; it is the default for CNCF-adjacent infra (Kubernetes, Terraform pre-BSL, OPA). MIT is fine if you value maximal simplicity, but you give up the patent grant and the NOTICE mechanism. | Phase 1 |
 | D2 | Notification architecture | A1 outbox + generic HMAC webhook / A2 multi-channel native notifiers / A3 log-and-let-users-bridge | **A1** (with the `Notifier` interface shaped so A2 can be added later). Full analysis in "Design question A" below. | Phase 8 |
 | D3 | Transport strategy | B1 stdio shim binary / B2 spec-conformant Streamable HTTP / B3 status quo documented | **B1 now, then B2.** Full analysis in "Design question B" below. | Phase 9 |
-| D4 | Container registry + image name | ghcr.io / Docker Hub | **`ghcr.io/ericmarcantonio/mcp-shield`** — free for public images, auth via the built-in `GITHUB_TOKEN` (no extra secret to manage), no Docker Hub pull-rate limits for consumers, images live next to the repo. Docker Hub only wins on discoverability-by-search, which GitHub's own package UI mostly matches. | Phase 7 |
-| D5 | Coverage floor | 60 / 70 / 80 | **70% now, revisit 80% after the transport work.** Justification in the Testing section. | Phase 4 (gate task) |
-| D6 | Rename `cmd/gateway` → `cmd/mcp-shield`, `cmd/server` → `cmd/mcp-shield-testserver` | yes / no | **Yes.** `go install github.com/EricMarcantonio/mcp-shield/cmd/gateway@latest` currently produces a binary named `gateway`, which is wrong for every user who installs the idiomatic way. This is the one structural rename that earns its churn. | Phase 6 |
 
 ---
 

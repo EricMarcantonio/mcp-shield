@@ -1,8 +1,7 @@
 # mcp-shield OSS Hardening — Design Document
 
 Date: 2026-07-25
-Status: D1, D4, D5, D6, D7 decided; **D2 and D3 still awaiting confirmation** (they gate
-Phases 8 and 9 respectively; everything else is executable as written)
+Status: all decisions D1-D7 resolved; the plan is executable end to end
 Companion plan: `docs/superpowers/plans/2026-07-25-oss-hardening.md`
 
 Goal: turn the working MVP into a professional open-source project that 10,000 people
@@ -20,10 +19,26 @@ from you" and the corresponding plan phase is gated on it.
 | # | Decision | Resolution | Date |
 |---|----------|------------|------|
 | D1 | License | **Apache-2.0**, as recommended. Landed in Phase 1. | 2026-07-25 |
+| D2 | Notification architecture | **A1 — transactional outbox + generic HMAC-signed webhook**, as recommended, with the send path behind a `Notifier` interface so A2 channels can be contributed later. | 2026-07-25 |
+| D3 | Transport strategy | **B1 first, then B2 split into two sub-phases with the upstream-facing half first.** See below. | 2026-07-25 |
 | D4 | Container registry | **`ghcr.io/ericmarcantonio/mcp-shield`**, as recommended. | 2026-07-25 |
 | D5 | Coverage floor | **70%** on `./internal/...`, as recommended. | 2026-07-25 |
 | D6 | `cmd/` renames | **Yes**, as recommended. Executing in Phase 6. | 2026-07-25 |
 | D7 | Target protocol version | **`2025-11-25` only, for now.** See below. | 2026-07-25 |
+
+### D3 — Transport sequencing (amends the Phase 9 structure below)
+
+B1 (stdio shim) runs first, unchanged. B2 is **split**, and the halves are
+reordered relative to this document's original recommendation:
+
+| Sub-phase | Work | Rationale |
+|---|---|---|
+| 9a | stdio shim (`mcp-shield connect`) | Unblocks Claude Desktop, the most-cited limitation. ~200 lines. |
+| 9b | **Upstream-facing** `StreamableHTTPTransport` | mcp-shield can only spawn *local subprocess* upstreams today, so it structurally cannot protect against remote third-party hosted MCP servers — which is exactly where the rug-pull threat this project exists to counter is highest. This is a threat-model expansion, not a compatibility feature. |
+| 9c | **Client-facing** Streamable HTTP endpoint | Compatibility work: lets spec-conformant clients connect natively. Includes the mandatory `Origin` validation and localhost-binding defaults. |
+
+9b and 9c each need their own plan document when their turn comes; the 2–4 week
+estimate in "Design question B" covers both together, not either alone.
 
 ### D7 — Target protocol version
 
@@ -60,11 +75,12 @@ Consequences for implementation:
 
 ---
 
-## Decisions still needed from you
+## D2 and D3 — options that were considered
 
-These block specific plan phases. Everything else proceeds without you.
+Retained as the record of what was weighed. Both are now decided (see above);
+the full analysis lives in "Design question A" and "Design question B" below.
 
-| # | Decision | Options | Recommendation | Blocks |
+| # | Decision | Options | Recommendation at the time | Gated |
 |---|----------|---------|----------------|--------|
 | D2 | Notification architecture | A1 outbox + generic HMAC webhook / A2 multi-channel native notifiers / A3 log-and-let-users-bridge | **A1** (with the `Notifier` interface shaped so A2 can be added later). Full analysis in "Design question A" below. | Phase 8 |
 | D3 | Transport strategy | B1 stdio shim binary / B2 spec-conformant Streamable HTTP / B3 status quo documented | **B1 now, then B2.** Full analysis in "Design question B" below. | Phase 9 |

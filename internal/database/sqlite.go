@@ -5,13 +5,20 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"io/fs"
+	"log/slog"
+	"os"
+	"path/filepath"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite" // registers the "sqlite" database/sql driver
 )
 
-// ErrNotFound is returned by lookups that require the row to exist
-// (GetManifestByID) when it does not.
+// ErrNotFound is returned by every Store lookup when the row does not
+// exist. There is exactly one absence convention: no lookup returns a nil
+// object with a nil error, so callers use errors.Is rather than a nil check
+// that is easy to forget and fails as a nil dereference when they do.
 var ErrNotFound = errors.New("database: not found")
 
 const schema = `
@@ -47,7 +54,8 @@ CREATE INDEX IF NOT EXISTS idx_approvals_manifest ON approvals(manifest_id);
 `
 
 // Store is the persistence interface used by the approval workflow and API
-// layers. Note what is deliberately absent: there is no method that updates
+// layers. Lookups return ErrNotFound when the row does not exist; no method
+// returns a nil object with a nil error. Note what is deliberately absent: there is no method that updates
 // a manifest's hash or canonical_json after insert. UpdateManifestState is
 // the only mutation on an existing manifest row, so manifest content is
 // physically immutable once written, not just immutable by convention.
@@ -81,12 +89,25 @@ type execer interface {
 
 // SQLiteStore is the top-level Store implementation backed by a *sql.DB.
 type SQLiteStore struct {
+	queries
 	db *sql.DB
 }
 
+// dbDirPerm is the mode of the directory holding the database. 0700, not
+// 0750: this database is the approvals audit trail — the record of who
+// authorized which capability change — so no group or other user has any
+// business reading it or the WAL and shared-memory files SQLite writes
+// beside it.
+const dbDirPerm fs.FileMode = 0o700
+
 // Open opens (creating if necessary) a SQLite database at path, applies the
-// schema, and configures WAL journaling and foreign keys.
+// schema, and configures WAL journaling and foreign keys. The parent
+// directory is created if it does not exist.
 func Open(path string) (*SQLiteStore, error) {
+	if err := ensureParentDir(path); err != nil {
+		return nil, err
+	}
+
 	db, err := sql.Open("sqlite", path)
 	if err != nil {
 		return nil, fmt.Errorf("database: open: %w", err)
@@ -108,57 +129,106 @@ func Open(path string) (*SQLiteStore, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("database: apply schema: %w", err)
 	}
-	return &SQLiteStore{db: db}, nil
+	return &SQLiteStore{queries: queries{e: db}, db: db}, nil
+}
+
+// ensureParentDir creates the directory holding the database file. It lives
+// here rather than in main so every entry point benefits: a release binary or
+// container starting in a fresh directory used to die on the first PRAGMA
+// with "unable to open database file (14)", because the default
+// DATABASE_PATH is "data/mcp.db" and nothing created "data/".
+//
+// Paths that name no directory are left alone: a bare filename, and SQLite's
+// in-memory DSNs (":memory:", "file::memory:...") which are not filesystem
+// paths at all.
+func ensureParentDir(path string) error {
+	if isInMemoryDSN(path) {
+		return nil
+	}
+	dir := filepath.Dir(path)
+	if dir == "." || dir == string(filepath.Separator) {
+		return nil
+	}
+	if err := os.MkdirAll(dir, dbDirPerm); err != nil {
+		return fmt.Errorf("database: create directory %q: %w", dir, err)
+	}
+	warnIfDirectoryIsWorldReadable(dir)
+	return nil
+}
+
+func isInMemoryDSN(path string) bool {
+	return path == ":memory:" || strings.HasPrefix(path, "file::memory:")
+}
+
+// warnIfDirectoryIsWorldReadable reports a pre-existing directory that other
+// local users can read. MkdirAll leaves an existing directory's mode alone,
+// and silently tightening a directory an operator deliberately created would
+// be a surprise — so this warns instead of changing it or refusing to start.
+func warnIfDirectoryIsWorldReadable(dir string) {
+	info, err := os.Stat(dir)
+	if err != nil {
+		return
+	}
+	if perm := info.Mode().Perm(); perm&0o077 != 0 {
+		slog.Warn("database directory is readable by other users; it holds the approvals audit trail",
+			"dir", dir, "mode", fmt.Sprintf("%#o", perm), "recommended", fmt.Sprintf("%#o", dbDirPerm))
+	}
 }
 
 func (s *SQLiteStore) Close() error { return s.db.Close() }
 
-func (s *SQLiteStore) CreateServer(ctx context.Context, name, endpoint string) (*Server, error) {
-	return createServer(ctx, s.db, name, endpoint)
+// queries implements every data method of Store once, against whichever
+// execer it is bound to. Both Store implementations embed it, so a new
+// method is written here alone instead of three times (helper, SQLiteStore
+// forwarder, txStore forwarder).
+type queries struct{ e execer }
+
+func (q queries) CreateServer(ctx context.Context, name, endpoint string) (*Server, error) {
+	return createServer(ctx, q.e, name, endpoint)
 }
 
-func (s *SQLiteStore) GetServerByName(ctx context.Context, name string) (*Server, error) {
-	return getServerByName(ctx, s.db, name)
+func (q queries) GetServerByName(ctx context.Context, name string) (*Server, error) {
+	return getServerByName(ctx, q.e, name)
 }
 
-func (s *SQLiteStore) GetServerByID(ctx context.Context, id int64) (*Server, error) {
-	return getServerByID(ctx, s.db, id)
+func (q queries) GetServerByID(ctx context.Context, id int64) (*Server, error) {
+	return getServerByID(ctx, q.e, id)
 }
 
-func (s *SQLiteStore) ListServers(ctx context.Context) ([]Server, error) {
-	return listServers(ctx, s.db)
+func (q queries) ListServers(ctx context.Context) ([]Server, error) {
+	return listServers(ctx, q.e)
 }
 
-func (s *SQLiteStore) InsertManifest(ctx context.Context, m *ManifestRecord) (int64, error) {
-	return insertManifest(ctx, s.db, m)
+func (q queries) InsertManifest(ctx context.Context, m *ManifestRecord) (int64, error) {
+	return insertManifest(ctx, q.e, m)
 }
 
-func (s *SQLiteStore) GetManifestByHash(ctx context.Context, serverID int64, hash string) (*ManifestRecord, error) {
-	return getManifestByHash(ctx, s.db, serverID, hash)
+func (q queries) GetManifestByHash(ctx context.Context, serverID int64, hash string) (*ManifestRecord, error) {
+	return getManifestByHash(ctx, q.e, serverID, hash)
 }
 
-func (s *SQLiteStore) GetManifestByID(ctx context.Context, id int64) (*ManifestRecord, error) {
-	return getManifestByID(ctx, s.db, id)
+func (q queries) GetManifestByID(ctx context.Context, id int64) (*ManifestRecord, error) {
+	return getManifestByID(ctx, q.e, id)
 }
 
-func (s *SQLiteStore) GetApprovedManifest(ctx context.Context, serverID int64) (*ManifestRecord, error) {
-	return getApprovedManifest(ctx, s.db, serverID)
+func (q queries) GetApprovedManifest(ctx context.Context, serverID int64) (*ManifestRecord, error) {
+	return getApprovedManifest(ctx, q.e, serverID)
 }
 
-func (s *SQLiteStore) ListPendingManifests(ctx context.Context) ([]ManifestRecord, error) {
-	return listPendingManifests(ctx, s.db)
+func (q queries) ListPendingManifests(ctx context.Context) ([]ManifestRecord, error) {
+	return listPendingManifests(ctx, q.e)
 }
 
-func (s *SQLiteStore) UpdateManifestState(ctx context.Context, id int64, newState string) error {
-	return updateManifestState(ctx, s.db, id, newState)
+func (q queries) UpdateManifestState(ctx context.Context, id int64, newState string) error {
+	return updateManifestState(ctx, q.e, id, newState)
 }
 
-func (s *SQLiteStore) InsertApproval(ctx context.Context, a *Approval) (int64, error) {
-	return insertApproval(ctx, s.db, a)
+func (q queries) InsertApproval(ctx context.Context, a *Approval) (int64, error) {
+	return insertApproval(ctx, q.e, a)
 }
 
-func (s *SQLiteStore) ListApprovalsForManifest(ctx context.Context, manifestID int64) ([]Approval, error) {
-	return listApprovalsForManifest(ctx, s.db, manifestID)
+func (q queries) ListApprovalsForManifest(ctx context.Context, manifestID int64) ([]Approval, error) {
+	return listApprovalsForManifest(ctx, q.e, manifestID)
 }
 
 func (s *SQLiteStore) WithTx(ctx context.Context, fn func(Store) error) error {
@@ -166,7 +236,7 @@ func (s *SQLiteStore) WithTx(ctx context.Context, fn func(Store) error) error {
 	if err != nil {
 		return fmt.Errorf("database: begin tx: %w", err)
 	}
-	if err := fn(&txStore{tx: tx}); err != nil {
+	if err := fn(&txStore{queries{e: tx}}); err != nil {
 		_ = tx.Rollback()
 		return err
 	}
@@ -179,57 +249,7 @@ func (s *SQLiteStore) WithTx(ctx context.Context, fn func(Store) error) error {
 // txStore is a Store bound to an in-flight transaction, handed to the
 // callback passed to WithTx so multi-step writes (e.g. approve = supersede
 // old row + flip new row's state + insert audit record) are atomic.
-type txStore struct {
-	tx *sql.Tx
-}
-
-func (s *txStore) CreateServer(ctx context.Context, name, endpoint string) (*Server, error) {
-	return createServer(ctx, s.tx, name, endpoint)
-}
-
-func (s *txStore) GetServerByName(ctx context.Context, name string) (*Server, error) {
-	return getServerByName(ctx, s.tx, name)
-}
-
-func (s *txStore) GetServerByID(ctx context.Context, id int64) (*Server, error) {
-	return getServerByID(ctx, s.tx, id)
-}
-
-func (s *txStore) ListServers(ctx context.Context) ([]Server, error) {
-	return listServers(ctx, s.tx)
-}
-
-func (s *txStore) InsertManifest(ctx context.Context, m *ManifestRecord) (int64, error) {
-	return insertManifest(ctx, s.tx, m)
-}
-
-func (s *txStore) GetManifestByHash(ctx context.Context, serverID int64, hash string) (*ManifestRecord, error) {
-	return getManifestByHash(ctx, s.tx, serverID, hash)
-}
-
-func (s *txStore) GetManifestByID(ctx context.Context, id int64) (*ManifestRecord, error) {
-	return getManifestByID(ctx, s.tx, id)
-}
-
-func (s *txStore) GetApprovedManifest(ctx context.Context, serverID int64) (*ManifestRecord, error) {
-	return getApprovedManifest(ctx, s.tx, serverID)
-}
-
-func (s *txStore) ListPendingManifests(ctx context.Context) ([]ManifestRecord, error) {
-	return listPendingManifests(ctx, s.tx)
-}
-
-func (s *txStore) UpdateManifestState(ctx context.Context, id int64, newState string) error {
-	return updateManifestState(ctx, s.tx, id, newState)
-}
-
-func (s *txStore) InsertApproval(ctx context.Context, a *Approval) (int64, error) {
-	return insertApproval(ctx, s.tx, a)
-}
-
-func (s *txStore) ListApprovalsForManifest(ctx context.Context, manifestID int64) ([]Approval, error) {
-	return listApprovalsForManifest(ctx, s.tx, manifestID)
-}
+type txStore struct{ queries }
 
 func (s *txStore) WithTx(_ context.Context, fn func(Store) error) error {
 	// Nested transactions aren't supported; a callback already running
@@ -257,7 +277,7 @@ func getServerByName(ctx context.Context, e execer, name string) (*Server, error
 	var s Server
 	if err := row.Scan(&s.ID, &s.Name, &s.Endpoint, &s.CreatedAt); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return nil, nil
+			return nil, ErrNotFound
 		}
 		return nil, fmt.Errorf("database: get server by name: %w", err)
 	}
@@ -269,7 +289,7 @@ func getServerByID(ctx context.Context, e execer, id int64) (*Server, error) {
 	var s Server
 	if err := row.Scan(&s.ID, &s.Name, &s.Endpoint, &s.CreatedAt); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return nil, nil
+			return nil, ErrNotFound
 		}
 		return nil, fmt.Errorf("database: get server by id: %w", err)
 	}
@@ -321,14 +341,8 @@ func getManifestByID(ctx context.Context, e execer, id int64) (*ManifestRecord, 
 	row := e.QueryRowContext(ctx, `
 		SELECT id, server_id, hash, canonical_json, state, risk_level, diff_json, created_at
 		FROM manifests WHERE id = ?`, id)
-	m, err := scanManifest(row)
-	if err != nil {
-		return nil, err
-	}
-	if m == nil {
-		return nil, ErrNotFound
-	}
-	return m, nil
+	// scanManifest already maps a missing row to ErrNotFound.
+	return scanManifest(row)
 }
 
 func getApprovedManifest(ctx context.Context, e execer, serverID int64) (*ManifestRecord, error) {
@@ -416,7 +430,7 @@ type scanner interface {
 func scanManifest(row *sql.Row) (*ManifestRecord, error) {
 	m, err := scanManifestRow(row)
 	if errors.Is(err, sql.ErrNoRows) {
-		return nil, nil
+		return nil, ErrNotFound
 	}
 	return m, err
 }

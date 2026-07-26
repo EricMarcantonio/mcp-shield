@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 // fakeUpstream is a scriptable stand-in for *UpstreamClient, substituted via
@@ -15,10 +16,17 @@ type fakeUpstream struct {
 	tools     []Tool
 	prompts   []Prompt
 	resources []Resource
+	closed    bool
+	initErr   error
 }
 
+func (f *fakeUpstream) Closed() bool { return f.closed }
+
 func (f *fakeUpstream) Initialize(_ context.Context) (*InitializeResult, error) {
-	return &InitializeResult{ProtocolVersion: "2024-11-05"}, nil
+	if f.initErr != nil {
+		return nil, f.initErr
+	}
+	return &InitializeResult{ProtocolVersion: ProtocolVersion}, nil
 }
 func (f *fakeUpstream) ListTools(_ context.Context) ([]Tool, error)     { return f.tools, nil }
 func (f *fakeUpstream) ListPrompts(_ context.Context) ([]Prompt, error) { return f.prompts, nil }
@@ -175,8 +183,9 @@ func TestInitializeNeverGated(t *testing.T) {
 	if err := json.Unmarshal(resp.Result, &result); err != nil {
 		t.Fatalf("decode result: %v", err)
 	}
-	if result.ProtocolVersion == "" {
-		t.Fatal("expected a protocol version in the initialize result")
+	if result.ProtocolVersion != ProtocolVersion {
+		t.Fatalf("downstream handshake advertised %q, want the one revision this gateway speaks (%q)",
+			result.ProtocolVersion, ProtocolVersion)
 	}
 }
 
@@ -237,45 +246,159 @@ func TestPassthroughBlockedWithoutBaseline(t *testing.T) {
 	}
 }
 
-// TestEnsureStartedNeverRecoversDeadUpstream pins a known bug (design doc
-// finding C2, internal/mcp/server.go:57-79): ensureStarted only calls
-// newClient when s.client is nil, and nothing in this codebase ever sets
-// s.client back to nil once it's been assigned. So once an upstream
-// subprocess dies, ensureStarted keeps handing back that same dead client
-// forever — even if a fresh call to newClient would succeed — until the
-// whole gateway process is restarted. Fail-closed on a dead upstream is
-// correct; fail-closed-forever is an availability bug. Not fixed here —
-// Phase 5 owns exposing UpstreamClient.Closed() and having ensureStarted
-// discard and respawn a dead client.
-func TestEnsureStartedNeverRecoversDeadUpstream(t *testing.T) {
+// newTestSession builds a session with a controllable clock so backoff and
+// circuit-breaker behavior can be tested without sleeping.
+func newTestSession(t *testing.T, factory upstreamFactory) (*serverSession, *fakeClock) {
+	t.Helper()
+	clock := &fakeClock{now: time.Unix(1000, 0)}
+	return &serverSession{cfg: ServerConfig{Name: "cal"}, newClient: factory, now: clock.Now}, clock
+}
+
+type fakeClock struct{ now time.Time }
+
+func (c *fakeClock) Now() time.Time          { return c.now }
+func (c *fakeClock) advance(d time.Duration) { c.now = c.now.Add(d) }
+
+// TestEnsureStartedRespawnsDeadUpstream guards the fix for design doc
+// finding C2. ensureStarted used to call newClient only when s.client was
+// nil, and nothing ever set it back to nil, so once an upstream subprocess
+// died the gateway handed back that same dead client until the whole process
+// was restarted. Fail-closed on a dead upstream is correct;
+// fail-closed-forever is an availability bug.
+func TestEnsureStartedRespawnsDeadUpstream(t *testing.T) {
 	first := &fakeUpstream{}
-	session := &serverSession{
-		cfg:       ServerConfig{Name: "cal"},
-		newClient: func(_ context.Context, _ ServerConfig) (upstream, error) { return first, nil },
-	}
+	session, _ := newTestSession(t, func(_ context.Context, _ ServerConfig) (upstream, error) {
+		return first, nil
+	})
 
 	got, err := session.ensureStarted(context.Background())
 	if err != nil {
 		t.Fatalf("ensureStarted: %v", err)
 	}
 	if got != upstream(first) {
-		t.Fatalf("expected the first client back on the first call")
+		t.Fatal("expected the first client back on the first call")
 	}
 
-	// Simulate the upstream subprocess dying and a fresh connection now
-	// being available: swap in a factory that would return a different,
-	// healthy client.
+	// The subprocess dies; a fresh connection would now succeed.
+	first.closed = true
 	second := &fakeUpstream{}
 	session.newClient = func(_ context.Context, _ ServerConfig) (upstream, error) { return second, nil }
 
 	got, err = session.ensureStarted(context.Background())
 	if err != nil {
-		t.Fatalf("ensureStarted: %v", err)
+		t.Fatalf("ensureStarted after upstream death: %v", err)
 	}
-	if got != upstream(first) {
-		t.Fatalf("known-bug pin broke: ensureStarted returned a new client after the factory "+
-			"changed — if it now recovers a dead upstream, update this test to assert recovery "+
-			"instead of the stale-forever behavior; got %+v, want the original first client", got)
+	if got != upstream(second) {
+		t.Fatalf("expected a respawned client, got the dead one back: %+v", got)
+	}
+}
+
+func TestRespawnIsRateLimitedByBackoff(t *testing.T) {
+	attempts := 0
+	session, clock := newTestSession(t, func(_ context.Context, _ ServerConfig) (upstream, error) {
+		attempts++
+		return nil, errors.New("exec: no such file")
+	})
+
+	if _, err := session.ensureStarted(context.Background()); err == nil {
+		t.Fatal("expected the first connection attempt to fail")
+	}
+
+	_, err := session.ensureStarted(context.Background())
+	if err == nil {
+		t.Fatal("expected the immediate retry to be refused")
+	}
+	if !strings.Contains(err.Error(), "retrying in") {
+		t.Fatalf("error should tell the operator when the next attempt happens, got %q", err)
+	}
+	if attempts != 1 {
+		t.Fatalf("a crash-looping upstream must not be respawned on every request; got %d attempts", attempts)
+	}
+
+	// Once the backoff window elapses, the next request probes again.
+	clock.advance(2 * time.Second)
+	if _, err := session.ensureStarted(context.Background()); err == nil {
+		t.Fatal("expected the probe after the backoff window to be attempted and fail")
+	}
+	if attempts != 2 {
+		t.Fatalf("expected exactly one probe after the backoff elapsed, got %d attempts", attempts)
+	}
+}
+
+func TestCircuitBreakerOpensAfterConsecutiveFailures(t *testing.T) {
+	session, clock := newTestSession(t, func(_ context.Context, _ ServerConfig) (upstream, error) {
+		return nil, errors.New("exec: no such file")
+	})
+
+	var err error
+	for i := 0; i < circuitOpenAfter; i++ {
+		if _, err = session.ensureStarted(context.Background()); err == nil {
+			t.Fatalf("attempt %d unexpectedly succeeded", i)
+		}
+		clock.advance(restartBackoffCap)
+	}
+
+	if _, err = session.ensureStarted(context.Background()); err == nil {
+		t.Fatal("expected the breaker-open attempt to fail")
+	}
+	clock.advance(time.Second)
+	_, err = session.ensureStarted(context.Background())
+	if err == nil {
+		t.Fatal("expected requests to be refused while the circuit breaker is open")
+	}
+	if !strings.Contains(err.Error(), "unavailable") || !strings.Contains(err.Error(), `"cal"`) {
+		t.Fatalf("breaker error must name the upstream and its state, got %q", err)
+	}
+}
+
+// TestDeadUpstreamFailsClosed is the security-relevant half of C2: an
+// upstream that cannot be reached must never turn into an implicit allow.
+func TestDeadUpstreamFailsClosed(t *testing.T) {
+	gate := &fakeGate{decision: &GateDecision{State: "APPROVED", SafeTools: map[string]bool{"calendar_read": true}}}
+	h, err := NewDownstreamHandler([]ServerConfig{{Name: "cal"}}, gate)
+	if err != nil {
+		t.Fatalf("new handler: %v", err)
+	}
+	h.servers["cal"].newClient = func(_ context.Context, _ ServerConfig) (upstream, error) {
+		return nil, errors.New("exec: no such file")
+	}
+
+	resp := rpc(t, h, "/mcp/cal", `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`)
+
+	if resp.Error == nil {
+		t.Fatalf("expected an error when the upstream cannot be reached, got result %s", resp.Result)
+	}
+	if resp.Result != nil {
+		t.Fatalf("an unreachable upstream must never produce a result, got %s", resp.Result)
+	}
+}
+
+// TestInitializeFailureDiscardsClient stops a half-connected upstream from
+// being retained: the process is up but never completed the handshake, so
+// reusing it would wedge the session on a peer that will never answer.
+func TestInitializeFailureDiscardsClient(t *testing.T) {
+	broken := &fakeUpstream{initErr: errors.New("handshake refused")}
+	healthy := &fakeUpstream{}
+	spawned := 0
+	session, clock := newTestSession(t, func(_ context.Context, _ ServerConfig) (upstream, error) {
+		spawned++
+		if spawned == 1 {
+			return broken, nil
+		}
+		return healthy, nil
+	})
+
+	if _, err := session.ensureStarted(context.Background()); err == nil {
+		t.Fatal("expected the failed handshake to be reported")
+	}
+	clock.advance(restartBackoffCap)
+
+	got, err := session.ensureStarted(context.Background())
+	if err != nil {
+		t.Fatalf("ensureStarted after handshake failure: %v", err)
+	}
+	if got != upstream(healthy) {
+		t.Fatal("expected the un-initialized client to be discarded and respawned")
 	}
 }
 

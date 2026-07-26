@@ -6,6 +6,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -26,6 +27,10 @@ type Config struct {
 	FailMode     approval.FailMode
 	Servers      []mcp.ServerConfig
 	TemplatesDir string // empty uses api.DefaultTemplatesDir
+
+	// UpstreamTimeout bounds one proxied request's upstream work; zero
+	// uses mcp.DefaultUpstreamTimeout.
+	UpstreamTimeout time.Duration
 }
 
 type App struct {
@@ -64,6 +69,9 @@ func New(cfg Config) (*App, error) {
 	if err != nil {
 		_ = store.Close()
 		return nil, fmt.Errorf("app: init downstream handler: %w", err)
+	}
+	if cfg.UpstreamTimeout > 0 {
+		downstream.UpstreamTimeout = cfg.UpstreamTimeout
 	}
 
 	var lc net.ListenConfig
@@ -138,18 +146,22 @@ type gateAdapter struct {
 }
 
 func (g *gateAdapter) CheckAndRecord(ctx context.Context, serverName string, tools []mcp.Tool, prompts []mcp.Prompt, resources []mcp.Resource) (*mcp.GateDecision, error) {
+	// A configured server is registered lazily, on its first connect.
 	srv, err := g.store.GetServerByName(ctx, serverName)
+	if errors.Is(err, database.ErrNotFound) {
+		srv, err = g.store.CreateServer(ctx, serverName, "")
+	}
 	if err != nil {
 		return nil, err
 	}
-	if srv == nil {
-		srv, err = g.store.CreateServer(ctx, serverName, "")
-		if err != nil {
-			return nil, err
-		}
-	}
 
-	m := manifest.Build(tools, prompts, resources)
+	// A capability set that violates the protocol's unique-identity rule is
+	// rejected here, which fails the in-flight request closed rather than
+	// fingerprinting a capability set the gate could not enforce.
+	m, err := manifest.Build(tools, prompts, resources)
+	if err != nil {
+		return nil, err
+	}
 	result, err := g.workflow.CheckAndRecord(ctx, srv.ID, m)
 	if err != nil {
 		return nil, err

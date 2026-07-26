@@ -54,10 +54,8 @@ func Canonicalize(m *Manifest) ([]byte, error) {
 }
 
 // canonicalizeValue recursively normalizes a decoded JSON value:
-//   - objects (map[string]any) get their keys sorted (encoding/json's
-//     map handling already sorts keys on marshal, but we normalize the
-//     shape explicitly here so the rule is self-evident and not an
-//     accidental side effect of stdlib behavior).
+//   - objects (map[string]any) get their keys sorted, by encoding/json's
+//     map marshaling.
 //   - arrays of only-primitive elements are sorted.
 //   - arrays containing any object/array element are canonicalized
 //     element-wise but keep their original order.
@@ -68,7 +66,10 @@ func canonicalizeValue(v any) any {
 		for k, child := range val {
 			out[k] = canonicalizeValue(child)
 		}
-		return sortedMap(out)
+		// encoding/json marshals map[string]any keys in sorted order;
+		// TestCanonicalizeValueSortsObjectKeys pins that invariant, which the
+		// manifest hash depends on.
+		return out
 	case []any:
 		canon := make([]any, len(val))
 		allPrimitive := true
@@ -120,14 +121,6 @@ func isPrimitive(v any) bool {
 	default:
 		return false
 	}
-}
-
-// sortedMap wraps a map so json.Marshal emits its keys in sorted order.
-// encoding/json already sorts map[string]any keys alphabetically when
-// marshaling, so this is a passthrough that documents the invariant the
-// rest of this file depends on.
-func sortedMap(m map[string]any) map[string]any {
-	return m
 }
 
 type toolDoc struct {

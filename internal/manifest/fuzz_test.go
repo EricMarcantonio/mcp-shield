@@ -92,19 +92,16 @@ func FuzzCanonicalizeValueStable(f *testing.F) {
 // unapproved manifest — or worse, two different capability sets could
 // collide onto the same approved hash.
 //
-// KNOWN BUG — see docs/superpowers/specs/2026-07-25-oss-hardening-design.md
-// and internal/manifest/builder.go:31-33: Build sorts tools with
-// sort.Slice keyed only on Name, which is neither stable (sort.Slice may
-// reorder equal elements arbitrarily) nor a total order (two tools with
-// the same Name are "equal" to the comparator but can differ in every
-// other field). Feeding two advertised tools that share a name reliably
-// reproduces order- and therefore hash-dependent output. Do not fix here
-// — Phase 5 owns it (make the sort a total, stable order on
-// Name+Description+InputSchema). The failing input is preserved as a seed
-// corpus entry at testdata/fuzz/FuzzManifestHashOrderInvariance so this
-// target keeps proving the bug is still present until Phase 5 lands the
-// fix, at which point this test starts passing and the seed becomes a
-// permanent regression guard.
+// The name1 == name2 case used to be skipped, because Build sorted tools
+// with sort.Slice keyed only on Name — neither stable nor a total order, so
+// two tools sharing a name made the hash depend on advertised order. Phase 5
+// resolved that by having Build reject duplicate identities outright (see
+// manifest.validateUniqueIdentities for why fail-closed beats normalizing),
+// so the target now asserts the property unconditionally: for any pair of
+// orderings, Build either rejects both or produces one hash. The seed corpus
+// entry testdata/fuzz/FuzzManifestHashOrderInvariance/
+// duplicate_tool_name_hash_nondeterminism, which reproduced the original bug,
+// is kept as a permanent regression guard.
 func FuzzManifestHashOrderInvariance(f *testing.F) {
 	f.Add("calendar_read", "calendar_create", "reads events", []byte(`{"type":"object"}`))
 	f.Add("a", "a", "duplicate names", []byte(`{"x":1}`))
@@ -112,29 +109,27 @@ func FuzzManifestHashOrderInvariance(f *testing.F) {
 		if len(schema) > 0 && !json.Valid(schema) {
 			t.Skip()
 		}
-		if name1 == name2 {
-			// Deliberately not asserted: manifest.Build (builder.go:31-33)
-			// sorts tools with sort.Slice keyed only on Name, which is
-			// neither stable nor a total order, so two tools sharing a
-			// name make Hash(Canonicalize(...)) depend on advertised
-			// order. Confirmed by the seed corpus entry at
-			// testdata/fuzz/FuzzManifestHashOrderInvariance/
-			// duplicate_tool_name_hash_nondeterminism (replay it directly
-			// with -run to see the failure). Fix owned by Phase 5 (make
-			// the sort total: Name, then Description, then InputSchema).
-			// This skip keeps the property test green everywhere else in
-			// the input space and out of the Phase 4 coverage gate/CI
-			// path; remove it once Phase 5 lands the fix so this target
-			// starts asserting the property unconditionally.
-			t.Skip("known bug: hash depends on tool order when names collide; see comment above and Phase 5")
-		}
 		t1 := mcp.Tool{Name: name1, Description: desc, InputSchema: schema}
 		t2 := mcp.Tool{Name: name2, InputSchema: json.RawMessage(`{"a":1,"b":2}`)}
-		ca, err := Canonicalize(Build([]mcp.Tool{t1, t2}, nil, nil))
+
+		forward, forwardErr := Build([]mcp.Tool{t1, t2}, nil, nil)
+		reverse, reverseErr := Build([]mcp.Tool{t2, t1}, nil, nil)
+
+		// Admissibility must not depend on advertised order either: a
+		// capability set an operator can approve in one ordering must not
+		// become inadmissible in another.
+		if (forwardErr == nil) != (reverseErr == nil) {
+			t.Fatalf("Build accepted one ordering and rejected the other: forward=%v reverse=%v", forwardErr, reverseErr)
+		}
+		if forwardErr != nil {
+			return
+		}
+
+		ca, err := Canonicalize(forward)
 		if err != nil {
 			t.Skip()
 		}
-		cb, err := Canonicalize(Build([]mcp.Tool{t2, t1}, nil, nil))
+		cb, err := Canonicalize(reverse)
 		if err != nil {
 			t.Fatalf("second ordering failed where first succeeded: %v", err)
 		}
@@ -155,7 +150,10 @@ func FuzzFromCanonicalJSONRoundTrip(f *testing.F) {
 		if len(schema) > 0 && !json.Valid(schema) {
 			t.Skip()
 		}
-		m := Build([]mcp.Tool{{Name: name, Description: desc, InputSchema: schema}}, nil, nil)
+		m, err := Build([]mcp.Tool{{Name: name, Description: desc, InputSchema: schema}}, nil, nil)
+		if err != nil {
+			t.Fatalf("single-tool manifest must always build: %v", err)
+		}
 		c1, err := Canonicalize(m)
 		if err != nil {
 			t.Skip()

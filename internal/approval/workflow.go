@@ -79,73 +79,101 @@ func (w *Workflow) CheckAndRecord(ctx context.Context, serverID int64, m *manife
 	}
 	hash := manifest.Hash(canonical)
 
-	baseline, err := w.store.GetApprovedManifest(ctx, serverID)
+	baseline, err := w.approvedBaseline(ctx, serverID)
 	if err != nil {
-		return nil, fmt.Errorf("approval: lookup baseline: %w", err)
+		return nil, err
 	}
 
 	// Fast path: this exact snapshot is the approved baseline itself, so
 	// there is nothing to diff — everything is safe.
 	if baseline != nil && baseline.Hash == hash {
-		return &CheckResult{
-			ManifestID:    baseline.ID,
-			State:         database.StateApproved,
-			SafeTools:     allToolNames(m),
-			SafePrompts:   allPromptNames(m),
-			SafeResources: allResourceURIs(m),
-		}, nil
+		return w.allowAll(baseline.ID, database.StateApproved, false, m), nil
 	}
 
 	var baselineManifest *manifest.Manifest
 	if baseline != nil {
-		bm, err := manifestFromRecord(baseline)
-		if err != nil {
+		if baselineManifest, err = manifestFromRecord(baseline); err != nil {
 			return nil, fmt.Errorf("approval: decode baseline: %w", err)
 		}
-		baselineManifest = bm
 	}
 	d := diff.Compare(baselineManifest, m)
-	safeTools, safePrompts, safeResources := unchangedSets(m, d)
 
-	existing, err := w.store.GetManifestByHash(ctx, serverID, hash)
+	manifestID, state, err := w.findOrInsertManifest(ctx, serverID, hash, canonical, d)
 	if err != nil {
-		return nil, fmt.Errorf("approval: lookup manifest: %w", err)
+		return nil, err
 	}
 
-	var manifestID int64
-	var state string
-	if existing != nil {
-		manifestID, state = existing.ID, existing.State
-	} else {
-		risk, _ := diff.ClassifyRisk(d)
-		diffBytes, err := json.Marshal(d)
-		if err != nil {
-			return nil, fmt.Errorf("approval: marshal diff: %w", err)
-		}
-		id, err := w.store.InsertManifest(ctx, &database.ManifestRecord{
-			ServerID:      serverID,
-			Hash:          hash,
-			CanonicalJSON: string(canonical),
-			State:         database.StatePending,
-			RiskLevel:     risk,
-			DiffJSON:      string(diffBytes),
-		})
-		if err != nil {
-			return nil, fmt.Errorf("approval: insert manifest: %w", err)
-		}
-		manifestID, state = id, database.StatePending
-	}
-
+	// warn mode observes without withholding: every capability is reported
+	// safe, but the manifest's real state is still recorded as-is.
 	if w.failMode == FailModeWarn {
-		return &CheckResult{
-			ManifestID: manifestID, State: state, Warn: true,
-			SafeTools: allToolNames(m), SafePrompts: allPromptNames(m), SafeResources: allResourceURIs(m),
-		}, nil
+		return w.allowAll(manifestID, state, true, m), nil
 	}
+
+	safeTools, safePrompts, safeResources := unchangedSets(m, d)
 	return &CheckResult{
 		ManifestID: manifestID, State: state,
 		SafeTools: safeTools, SafePrompts: safePrompts, SafeResources: safeResources,
 	}, nil
+}
+
+// approvedBaseline returns the server's approved manifest, or nil when it has
+// none yet. A first-ever connect is an ordinary state, not a failure —
+// everything in the manifest is then reported as added.
+func (w *Workflow) approvedBaseline(ctx context.Context, serverID int64) (*database.ManifestRecord, error) {
+	baseline, err := w.store.GetApprovedManifest(ctx, serverID)
+	if errors.Is(err, database.ErrNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("approval: lookup baseline: %w", err)
+	}
+	return baseline, nil
+}
+
+// findOrInsertManifest returns the id and state for this hash, inserting a
+// new PENDING row (diffed and risk-classified) the first time the hash is
+// seen. A hash seen before reuses its existing row, so an operator's earlier
+// decision on it is never quietly reset by a reconnect.
+func (w *Workflow) findOrInsertManifest(ctx context.Context, serverID int64, hash string, canonical []byte, d *diff.Diff) (int64, string, error) {
+	existing, err := w.store.GetManifestByHash(ctx, serverID, hash)
+	switch {
+	case err == nil:
+		return existing.ID, existing.State, nil
+	case !errors.Is(err, database.ErrNotFound):
+		return 0, "", fmt.Errorf("approval: lookup manifest: %w", err)
+	}
+
+	risk, _ := diff.ClassifyRisk(d)
+	diffBytes, err := json.Marshal(d)
+	if err != nil {
+		return 0, "", fmt.Errorf("approval: marshal diff: %w", err)
+	}
+	id, err := w.store.InsertManifest(ctx, &database.ManifestRecord{
+		ServerID:      serverID,
+		Hash:          hash,
+		CanonicalJSON: string(canonical),
+		State:         database.StatePending,
+		RiskLevel:     risk,
+		DiffJSON:      string(diffBytes),
+	})
+	if err != nil {
+		return 0, "", fmt.Errorf("approval: insert manifest: %w", err)
+	}
+	return id, database.StatePending, nil
+}
+
+// allowAll builds a result marking every advertised capability safe. Used by
+// the approved-baseline fast path and by warn mode — the two cases where
+// nothing is withheld.
+func (w *Workflow) allowAll(manifestID int64, state string, warn bool, m *manifest.Manifest) *CheckResult {
+	return &CheckResult{
+		ManifestID:    manifestID,
+		State:         state,
+		Warn:          warn,
+		SafeTools:     allToolNames(m),
+		SafePrompts:   allPromptNames(m),
+		SafeResources: allResourceURIs(m),
+	}
 }
 
 func allToolNames(m *manifest.Manifest) map[string]bool {
@@ -233,9 +261,12 @@ func (w *Workflow) Approve(ctx context.Context, manifestID int64, username, reas
 			return fmt.Errorf("%w: manifest %d is %s", ErrNotPending, manifestID, rec.State)
 		}
 
-		if prior, err := tx.GetApprovedManifest(ctx, rec.ServerID); err != nil {
+		// Approving the very first manifest for a server supersedes nothing.
+		prior, err := tx.GetApprovedManifest(ctx, rec.ServerID)
+		if err != nil && !errors.Is(err, database.ErrNotFound) {
 			return err
-		} else if prior != nil {
+		}
+		if err == nil {
 			if err := tx.UpdateManifestState(ctx, prior.ID, database.StateSuperseded); err != nil {
 				return err
 			}

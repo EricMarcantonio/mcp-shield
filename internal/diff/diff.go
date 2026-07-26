@@ -159,11 +159,31 @@ func Summarize(d *Diff) []string {
 	for _, name := range d.RemovedPrompts {
 		out = append(out, "Removed prompt: "+name)
 	}
+	// A changed prompt is not cosmetic: prompt arguments feed straight into
+	// the model, so an argument the approver never saw is an injection
+	// vector. These two loops were missing, which rendered a manifest whose
+	// only change was a prompt or resource as an empty change list.
+	for _, pc := range d.ChangedPrompts {
+		switch {
+		case pc.ArgumentsChanged:
+			out = append(out, "Arguments changed: prompt "+pc.Name)
+		case pc.DescriptionChanged:
+			out = append(out, "Description changed: prompt "+pc.Name)
+		}
+	}
 	for _, uri := range d.AddedResources {
 		out = append(out, "Added resource: "+uri)
 	}
 	for _, uri := range d.RemovedResources {
 		out = append(out, "Removed resource: "+uri)
+	}
+	for _, rc := range d.ChangedResources {
+		switch {
+		case rc.MimeTypeChanged:
+			out = append(out, "MIME type changed: resource "+rc.URI)
+		case rc.DescriptionChanged:
+			out = append(out, "Description changed: resource "+rc.URI)
+		}
 	}
 	return out
 }

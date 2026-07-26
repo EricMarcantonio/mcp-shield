@@ -40,8 +40,10 @@
     <div><h3>Changed tools</h3><ul>{{range .Diff.ChangedTools}}<li>{{.}}</li>{{else}}<li class="none">none</li>{{end}}</ul></div>
     <div><h3>Added prompts</h3><ul>{{range .Diff.AddedPrompts}}<li>{{.}}</li>{{else}}<li class="none">none</li>{{end}}</ul></div>
     <div><h3>Removed prompts</h3><ul>{{range .Diff.RemovedPrompts}}<li>{{.}}</li>{{else}}<li class="none">none</li>{{end}}</ul></div>
+    <div><h3>Changed prompts</h3><ul>{{range .Diff.ChangedPrompts}}<li>{{.}}</li>{{else}}<li class="none">none</li>{{end}}</ul></div>
     <div><h3>Added resources</h3><ul>{{range .Diff.AddedResources}}<li>{{.}}</li>{{else}}<li class="none">none</li>{{end}}</ul></div>
     <div><h3>Removed resources</h3><ul>{{range .Diff.RemovedResources}}<li>{{.}}</li>{{else}}<li class="none">none</li>{{end}}</ul></div>
+    <div><h3>Changed resources</h3><ul>{{range .Diff.ChangedResources}}<li>{{.}}</li>{{else}}<li class="none">none</li>{{end}}</ul></div>
   </div>
   {{end}}
 

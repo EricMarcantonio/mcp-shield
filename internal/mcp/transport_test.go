@@ -40,14 +40,6 @@ func TestStdioTransportSendBeforeStartErrors(t *testing.T) {
 	}
 }
 
-// TestStdioTransportCloseDoesNotLeakReadLoop documents finding S6: readLoop
-// blocks forever writing to t.frames (a capacity-16 channel) once nothing is
-// draining it, and Close does not wait for readLoop to exit. A real upstream
-// that emits enough unread frames after Close leaks a goroutine and pipe per
-// dead connection. This is NOT fixed here (Phase 5 owns it) — this test
-// exercises the ordinary Close path and passes today because the child never
-// writes enough to fill the buffer; it is not a regression guard for S6
-// itself, just a placeholder documenting where that fix belongs.
 func TestStdioTransportCloseDoesNotBlock(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("relies on cat")
@@ -64,6 +56,59 @@ func TestStdioTransportCloseDoesNotBlock(t *testing.T) {
 	select {
 	case <-done:
 	case <-time.After(2 * time.Second):
-		t.Fatal("Close did not return within 2s (see S6: readLoop goroutine leak)")
+		t.Fatal("Close did not return within 2s")
 	}
+}
+
+// TestCloseUnblocksSaturatedReadLoop guards finding S6. readLoop sent frames
+// with a bare `t.frames <- frame` on a capacity-16 channel, so once nothing
+// drained it the goroutine wedged mid-send and Close never released it,
+// leaking a goroutine and a pipe per dead upstream. That is exactly the state
+// the client leaves behind: after dispatchLoop terminates and fails all
+// pending calls, nobody is reading frames any more.
+//
+// `yes` floods stdout, so the buffer is full long before Close is called.
+func TestCloseUnblocksSaturatedReadLoop(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("relies on yes")
+	}
+	before := runtime.NumGoroutine()
+
+	tr := NewStdioTransport("yes", []string{`{"jsonrpc":"2.0","id":1}`}, nil)
+	if err := tr.Start(context.Background()); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+
+	// Wait until the frame buffer is saturated and readLoop is parked on a
+	// send, rather than sleeping a fixed duration and hoping.
+	frames, _ := tr.Recv()
+	deadline := time.Now().Add(2 * time.Second)
+	for len(frames) < cap(frames) && time.Now().Before(deadline) {
+		runtime.Gosched()
+	}
+	if len(frames) < cap(frames) {
+		t.Fatalf("frame buffer never filled (%d/%d); test cannot exercise the blocked-send path", len(frames), cap(frames))
+	}
+
+	done := make(chan struct{})
+	go func() { _ = tr.Close(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Close blocked behind a saturated read loop")
+	}
+
+	// readLoop must actually exit, not merely stop being waited on. Nothing
+	// drains frames here on purpose: draining is precisely what unblocks a
+	// wedged send, so a test that drains cannot observe this leak. The
+	// goroutine count is the only honest signal.
+	settle := time.Now().Add(2 * time.Second)
+	for time.Now().Before(settle) {
+		if runtime.NumGoroutine() <= before {
+			return
+		}
+		runtime.Gosched()
+	}
+	t.Fatalf("read loop leaked after Close: %d goroutines before Start, %d still running (it is parked on a send to a full frames channel)",
+		before, runtime.NumGoroutine())
 }

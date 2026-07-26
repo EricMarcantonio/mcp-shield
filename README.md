@@ -109,6 +109,10 @@ curl localhost:8081/api/manifests/pending
 curl -X POST localhost:8081/api/manifests/1/approve -d '{"username":"you","reason":"reviewed"}'
 ```
 
+`username` is required. The approvals table is the record of who authorized
+a capability change, so a decision the gateway cannot attribute is rejected
+with a 400 rather than recorded under an identity nobody supplied.
+
 ...or use the dashboard at `http://localhost:8081/`.
 
 For a guided walkthrough that edits a running server's tools and watches

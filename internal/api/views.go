@@ -29,14 +29,23 @@ type ManifestView struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
+// serverNameFor resolves the server a manifest belongs to. The error is
+// propagated rather than papered over with a placeholder name: a manifest row
+// pointing at a server that does not exist is referential corruption, and
+// showing an approver "unknown" instead of failing hides it at exactly the
+// moment they are deciding whether to trust that manifest.
+func serverNameFor(ctx context.Context, store database.Store, serverID int64) (string, error) {
+	srv, err := store.GetServerByID(ctx, serverID)
+	if err != nil {
+		return "", err
+	}
+	return srv.Name, nil
+}
+
 func toPendingView(ctx context.Context, store database.Store, m database.ManifestRecord) (PendingManifestView, error) {
-	srv, err := store.GetServerByID(ctx, m.ServerID)
+	name, err := serverNameFor(ctx, store, m.ServerID)
 	if err != nil {
 		return PendingManifestView{}, err
-	}
-	name := "unknown"
-	if srv != nil {
-		name = srv.Name
 	}
 
 	var changes []string
@@ -54,13 +63,9 @@ func toPendingView(ctx context.Context, store database.Store, m database.Manifes
 }
 
 func toManifestView(ctx context.Context, store database.Store, m *database.ManifestRecord) (ManifestView, error) {
-	srv, err := store.GetServerByID(ctx, m.ServerID)
+	name, err := serverNameFor(ctx, store, m.ServerID)
 	if err != nil {
 		return ManifestView{}, err
-	}
-	name := "unknown"
-	if srv != nil {
-		name = srv.Name
 	}
 	return ManifestView{
 		ID: m.ID, Server: name, Hash: m.Hash, State: m.State, Risk: m.RiskLevel, CreatedAt: m.CreatedAt,

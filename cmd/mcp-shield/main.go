@@ -24,24 +24,12 @@ import (
 var version = "dev"
 
 func main() {
-	if len(os.Args) > 1 {
-		switch os.Args[1] {
-		case "version":
-			fmt.Println("mcp-shield " + version)
-			return
-		case "servers", "manifests", "approve", "reject", "diff":
-			if err := runCLI(os.Args[1], os.Args[2:]); err != nil {
-				fmt.Fprintln(os.Stderr, "error:", err)
-				os.Exit(1)
-			}
-			return
-		case "serve":
-			// fall through to daemon mode
-		default:
-			fmt.Fprintf(os.Stderr, "unknown command %q\n", os.Args[1])
-			fmt.Fprintln(os.Stderr, "usage: mcp-shield [serve|servers|manifests|approve <id>|reject <id>|diff <id>|version]")
+	if len(os.Args) > 1 && os.Args[1] != "serve" {
+		if err := runCLI(os.Args[1], os.Args[2:]); err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
 			os.Exit(1)
 		}
+		return
 	}
 
 	if err := runDaemon(); err != nil {
@@ -57,6 +45,14 @@ func runDaemon() error {
 		APIAddr:      getenv("API_ADDR", ":8081"),
 		FailMode:     approval.FailMode(getenv("FAIL_MODE", string(approval.FailModeBlock))),
 		TemplatesDir: os.Getenv("TEMPLATES_DIR"),
+	}
+
+	if raw := os.Getenv("UPSTREAM_TIMEOUT"); raw != "" {
+		timeout, err := time.ParseDuration(raw)
+		if err != nil {
+			return fmt.Errorf("UPSTREAM_TIMEOUT %q: %w", raw, err)
+		}
+		cfg.UpstreamTimeout = timeout
 	}
 
 	servers, err := loadServerConfig(getenv("CONFIG_PATH", "config/servers.json"))

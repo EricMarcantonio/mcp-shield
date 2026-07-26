@@ -3,6 +3,8 @@ package database
 import (
 	"context"
 	"errors"
+	"io/fs"
+	"os"
 	"path/filepath"
 	"testing"
 )
@@ -16,6 +18,88 @@ func openTestStore(t *testing.T) *SQLiteStore {
 	}
 	t.Cleanup(func() { _ = store.Close() })
 	return store
+}
+
+// TestOpenCreatesMissingParentDirectory covers first launch on a clean
+// machine. DATABASE_PATH defaults to "data/mcp.db" and nothing created
+// "data/", so a release binary or container started in a fresh directory
+// died on the first PRAGMA with "unable to open database file (14)". It was
+// masked in development because docker-compose bind-mounts a volume over
+// /app/data and the repo has a committed data/ directory.
+func TestOpenCreatesMissingParentDirectory(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "data", "mcp.db")
+
+	store, err := Open(path)
+	if err != nil {
+		t.Fatalf("open with a missing parent directory: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	if _, err := store.CreateServer(context.Background(), "calendar", ""); err != nil {
+		t.Fatalf("store unusable after creating its directory: %v", err)
+	}
+}
+
+// TestOpenCreatesPrivateDirectory pins the permission bits. This directory
+// holds the approvals audit trail — the record of who authorized which
+// capability change — so it is not an ordinary cache directory that other
+// local users may read.
+func TestOpenCreatesPrivateDirectory(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "nested", "data")
+	store, err := Open(filepath.Join(dir, "mcp.db"))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	info, err := os.Stat(dir)
+	if err != nil {
+		t.Fatalf("stat created directory: %v", err)
+	}
+	if perm := info.Mode().Perm(); perm != fs.FileMode(0o700) {
+		t.Fatalf("expected the audit database directory to be private (0700), got %#o", perm)
+	}
+}
+
+// TestOpenAcceptsPathsWithoutADirectoryComponent covers a bare filename and
+// SQLite's in-memory DSNs, none of which name a directory to create.
+func TestOpenAcceptsPathsWithoutADirectoryComponent(t *testing.T) {
+	for _, path := range []string{":memory:", "file::memory:", "file::memory:?cache=shared"} {
+		t.Run(path, func(t *testing.T) {
+			store, err := Open(path)
+			if err != nil {
+				t.Fatalf("open %q: %v", path, err)
+			}
+			_ = store.Close()
+		})
+	}
+}
+
+// TestAbsentRowsReturnErrNotFound pins the one absence convention. Four
+// lookups used to return (nil, nil) while GetManifestByID returned
+// ErrNotFound, so every caller had to remember which kind each one was — and
+// a forgotten nil check is a nil dereference, not a compile error.
+func TestAbsentRowsReturnErrNotFound(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+
+	lookups := map[string]func() (any, error){
+		"GetServerByName": func() (any, error) { return store.GetServerByName(ctx, "no-such-server") },
+		"GetServerByID":   func() (any, error) { return store.GetServerByID(ctx, 9999) },
+		"GetManifestByID": func() (any, error) { return store.GetManifestByID(ctx, 9999) },
+		"GetManifestByHash": func() (any, error) {
+			return store.GetManifestByHash(ctx, 9999, "no-such-hash")
+		},
+		"GetApprovedManifest": func() (any, error) { return store.GetApprovedManifest(ctx, 9999) },
+	}
+	for name, lookup := range lookups {
+		t.Run(name, func(t *testing.T) {
+			_, err := lookup()
+			if !errors.Is(err, ErrNotFound) {
+				t.Fatalf("%s on a missing row returned %v, want ErrNotFound", name, err)
+			}
+		})
+	}
 }
 
 func TestServerCRUD(t *testing.T) {
@@ -38,12 +122,8 @@ func TestServerCRUD(t *testing.T) {
 		t.Fatalf("expected same id, got %d vs %d", got.ID, srv.ID)
 	}
 
-	missing, err := store.GetServerByName(ctx, "nope")
-	if err != nil {
-		t.Fatalf("get missing: %v", err)
-	}
-	if missing != nil {
-		t.Fatalf("expected nil for missing server")
+	if _, err := store.GetServerByName(ctx, "nope"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("expected ErrNotFound for a missing server, got %v", err)
 	}
 }
 
@@ -64,12 +144,8 @@ func TestGetServerByID(t *testing.T) {
 		t.Fatalf("expected name calendar, got %q", got.Name)
 	}
 
-	missing, err := store.GetServerByID(ctx, 9999)
-	if err != nil {
-		t.Fatalf("get missing by id: %v", err)
-	}
-	if missing != nil {
-		t.Fatalf("expected nil for a missing server id, got %+v", missing)
+	if _, err := store.GetServerByID(ctx, 9999); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("expected ErrNotFound for a missing server id, got %v", err)
 	}
 }
 
@@ -124,12 +200,8 @@ func TestGetManifestByHash(t *testing.T) {
 		t.Fatalf("expected id %d, got %d", id, got.ID)
 	}
 
-	missing, err := store.GetManifestByHash(ctx, srv.ID, "nope")
-	if err != nil {
-		t.Fatalf("get missing by hash: %v", err)
-	}
-	if missing != nil {
-		t.Fatalf("expected nil for an unknown hash, got %+v", missing)
+	if _, err := store.GetManifestByHash(ctx, srv.ID, "nope"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("expected ErrNotFound for an unknown hash, got %v", err)
 	}
 }
 
@@ -141,12 +213,8 @@ func TestGetApprovedManifestNone(t *testing.T) {
 		t.Fatalf("insert: %v", err)
 	}
 
-	approved, err := store.GetApprovedManifest(ctx, srv.ID)
-	if err != nil {
-		t.Fatalf("get approved: %v", err)
-	}
-	if approved != nil {
-		t.Fatalf("expected nil when no manifest is APPROVED, got %+v", approved)
+	if _, err := store.GetApprovedManifest(ctx, srv.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("expected ErrNotFound when no manifest is APPROVED, got %v", err)
 	}
 }
 

@@ -21,8 +21,16 @@ func apiBase() string {
 	return "http://localhost:8081"
 }
 
+// usage is the single source of truth for what subcommands exist; main
+// routes anything that is not "serve" here so the list cannot drift between
+// two switch statements.
+const usage = "usage: mcp-shield [serve|servers|manifests|approve <id>|reject <id>|diff <id>|version]"
+
 func runCLI(cmd string, args []string) error {
 	switch cmd {
+	case "version":
+		fmt.Println("mcp-shield " + version)
+		return nil
 	case "servers":
 		return cliServers()
 	case "manifests":
@@ -34,7 +42,7 @@ func runCLI(cmd string, args []string) error {
 	case "diff":
 		return cliDiff(args)
 	default:
-		return fmt.Errorf("unknown subcommand %q", cmd)
+		return fmt.Errorf("unknown command %q\n%s", cmd, usage)
 	}
 }
 
@@ -133,13 +141,13 @@ func cliDiff(args []string) error {
 	if len(args) != 1 {
 		return fmt.Errorf("usage: mcp-shield diff <manifest-id>")
 	}
-	var out bytes.Buffer
-	if err := getRaw(fmt.Sprintf("/api/manifests/%s/diff", args[0]), &out); err != nil {
+	raw, err := apiGet(fmt.Sprintf("/api/manifests/%s/diff", args[0]))
+	if err != nil {
 		return err
 	}
 	var pretty bytes.Buffer
-	if err := json.Indent(&pretty, out.Bytes(), "", "  "); err != nil {
-		fmt.Println(out.String())
+	if err := json.Indent(&pretty, raw, "", "  "); err != nil {
+		fmt.Println(string(raw))
 		return nil
 	}
 	fmt.Println(pretty.String())
@@ -147,39 +155,34 @@ func cliDiff(args []string) error {
 }
 
 func getJSON(path string, out any) error {
-	resp, err := apiGet(path)
+	b, err := apiGet(path)
 	if err != nil {
 		return err
 	}
-	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode >= 300 {
-		b, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("%s: %s: %s", path, resp.Status, string(b))
-	}
-	return json.NewDecoder(resp.Body).Decode(out)
+	return json.Unmarshal(b, out)
 }
 
 // apiGet issues a GET against the operator-configured mcp-shield API
 // (MCP_SHIELD_API env var, defaulting to localhost:8081), not
-// attacker-controlled input.
-func apiGet(path string) (*http.Response, error) {
+// attacker-controlled input, and returns the response body. Every non-2xx
+// is an error carrying the server's own message, so no caller has to
+// re-derive that.
+func apiGet(path string) ([]byte, error) {
 	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, apiBase()+path, nil) //nolint:gosec // G704: URL is built from the operator-configured API base, not external input
 	if err != nil {
 		return nil, err
 	}
-	return http.DefaultClient.Do(req) //nolint:gosec // G704: request targets the operator-configured API base, not external input
-}
-
-func getRaw(path string, out *bytes.Buffer) error {
-	resp, err := apiGet(path)
+	resp, err := http.DefaultClient.Do(req) //nolint:gosec // G704: request targets the operator-configured API base, not external input
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode >= 300 {
-		b, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("%s: %s: %s", path, resp.Status, string(b))
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("%s: read response: %w", path, err)
 	}
-	_, err = out.ReadFrom(resp.Body)
-	return err
+	if resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("%s: %s: %s", path, resp.Status, string(body))
+	}
+	return body, nil
 }

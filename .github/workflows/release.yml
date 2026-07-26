@@ -70,7 +70,13 @@ jobs:
       # changed should be able to prove where its own artifacts came from.
       # These attestations are verifiable with:
       #   gh attestation verify <file-or-oci-ref> --repo EricMarcantonio/mcp-shield
+      # Build provenance cannot be persisted for user-owned PRIVATE repos --
+      # the API returns "Feature not available for user-owned private
+      # repositories". Skipping rather than failing keeps a private-repo
+      # release whole; the moment this repo is public the condition flips and
+      # attestation happens with no edit here.
       - name: Attest release binaries
+        if: ${{ !github.event.repository.private }}
         uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
         with:
           subject-path: |
@@ -133,6 +139,7 @@ jobs:
           helm push dist-chart/mcp-shield-*.tgz oci://ghcr.io/ericmarcantonio/charts
 
       - name: Attest chart provenance
+        if: ${{ !github.event.repository.private }} # see note in the goreleaser job
         uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
         with:
           subject-path: dist-chart/mcp-shield-*.tgz

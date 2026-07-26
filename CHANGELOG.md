@@ -8,3 +8,8 @@ All notable changes to mcp-shield are documented here. Format follows
 
 ### Added
 - LICENSE, SECURITY.md, CONTRIBUTING.md, CODE_OF_CONDUCT.md, issue/PR templates.
+
+### Changed
+- `go install github.com/EricMarcantonio/mcp-shield/cmd/mcp-shield@latest` now
+  installs a binary named `mcp-shield` (previously `cmd/gateway` produced a
+  binary named `gateway`).

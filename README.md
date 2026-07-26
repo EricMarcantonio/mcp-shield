@@ -1,4 +1,6 @@
-# mcp-shield
+<p align="center">
+  <img src="assets/logo-wordmark.svg" alt="mcp-shield" width="380">
+</p>
 
 > A Zero Trust gateway for the Model Context Protocol. Every tool an MCP
 > server advertises is fingerprinted, diffed, and held for human approval

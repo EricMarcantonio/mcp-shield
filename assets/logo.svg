@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 132" width="120" height="132" role="img" aria-label="mcp-shield">
+  <title>mcp-shield</title>
+  <style>
+    /* The slate half is dark by design. On a dark backdrop it would sink into
+       the page, so lift it just enough to stay legible without becoming a
+       second accent colour. */
+    .slate { fill: #1F3349; }
+    .accent { fill: #069EB9; }
+    @media (prefers-color-scheme: dark) {
+      .slate { fill: #3E5A7A; }
+    }
+  </style>
+
+  <!-- Two interlocking halves meeting on a vertical seam: an advertised
+       capability set matched against its approved baseline. -->
+  <path class="slate" d="M58 6.5 L10 20 C10 68 28 108 58 126 Z"/>
+  <path class="accent" d="M62 6.5 L110 20 C110 68 92 108 62 126 Z"/>
+</svg>

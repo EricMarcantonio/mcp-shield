@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 470 132" width="470" height="132" role="img" aria-label="mcp-shield">
+  <title>mcp-shield</title>
+  <style>
+    .slate { fill: #1F3349; }
+    .accent { fill: #069EB9; }
+    .word {
+      font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas,
+                   "Liberation Mono", monospace;
+      font-size: 54px;
+      font-weight: 700;
+      letter-spacing: -1.5px;
+      fill: #1F3349;
+    }
+    @media (prefers-color-scheme: dark) {
+      .slate { fill: #3E5A7A; }
+      .word { fill: #E6EDF3; }
+    }
+  </style>
+
+  <path class="slate" d="M58 6.5 L10 20 C10 68 28 108 58 126 Z"/>
+  <path class="accent" d="M62 6.5 L110 20 C110 68 92 108 62 126 Z"/>
+
+  <!-- The hyphen carries the accent so the seam colour reappears in the
+       wordmark, tying the two halves of the lockup together. -->
+  <text class="word" x="140" y="86">mcp<tspan fill="#069EB9">-</tspan>shield</text>
+</svg>

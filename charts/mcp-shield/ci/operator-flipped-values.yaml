@@ -1,0 +1,31 @@
+# Values a real operator flipping this chart's "make it more open" knobs
+# would set: dashboard exposed via LoadBalancer + Ingress, a scoped
+# NetworkPolicy allow-list instead of the fully-closed default, a
+# configured upstream server carrying a credential, and FAIL_MODE=warn for
+# rollout observation. Used by `helm lint`/`helm template` in CI
+# (.github/workflows/chart-lint.yml) and manual verification -- not
+# rendered into the packaged chart (excluded via .helmignore).
+dashboard:
+  service:
+    type: LoadBalancer
+  ingress:
+    enabled: true
+    className: nginx
+    hosts:
+      - host: mcp-shield-approvals.example.com
+        paths:
+          - path: /
+            pathType: Prefix
+  networkPolicy:
+    allowFrom:
+      - namespaceSelector:
+          matchLabels:
+            kubernetes.io/metadata.name: mcp-shield-operators
+config:
+  servers:
+    - name: calendar
+      command: /app/bin/some-upstream
+      args: ["--flag"]
+      env: ["API_KEY=changeme"]
+env:
+  failMode: warn

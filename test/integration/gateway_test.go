@@ -1,12 +1,13 @@
 //go:build integration
 
 // Package integration drives a fully wired gateway (internal/app) against
-// the fake MCP test server (cmd/server), stepping it through v1 -> v2 -> v3
-// and asserting the approval workflow's partial-allow behavior end to end:
-// an unapproved capability change withholds only the new/changed tools,
-// not the whole server.
+// the fake MCP test server (cmd/mcp-shield-testserver), stepping it through
+// v1 -> v2 -> v3 and asserting the approval workflow's partial-allow
+// behavior end to end: an unapproved capability change withholds only the
+// new/changed tools, not the whole server.
 // Run via `go test -tags=integration ./test/...`; requires `make build`
-// (or `go build ./cmd/server`) to have produced the testserver binary.
+// (or `go build ./cmd/mcp-shield-testserver`) to have produced the
+// testserver binary.
 package integration
 
 import (
@@ -143,8 +144,7 @@ func apiPost(t *testing.T, apiAddr, path string) int {
 }
 
 type pendingRow struct {
-	ID   int64  `json:"id"`
-	Risk string `json:"risk"`
+	ID int64 `json:"id"`
 }
 
 func idStr(id int64) string {
@@ -168,9 +168,9 @@ func TestFullApprovalLifecycleV1toV3(t *testing.T) {
 	bin := testServerBinary(t)
 	dbPath := filepath.Join(t.TempDir(), "gateway.db")
 
-	// --- v1: first connect is PENDING, low risk. No approved baseline
-	// exists yet, so nothing is "unchanged" -- tools/list comes back
-	// empty (not an error), and the specific tool is blocked on call.
+	// --- v1: first connect is PENDING. No approved baseline exists yet,
+	// so nothing is "unchanged" -- tools/list comes back empty (not an
+	// error), and the specific tool is blocked on call.
 	a1 := startApp(t, dbPath, bin, "v1")
 
 	assertStringSlicesEqual(t, toolNames(t, rpcCall(t, a1.ProxyAddr, "calendar", "tools/list")), []string{})
@@ -184,9 +184,6 @@ func TestFullApprovalLifecycleV1toV3(t *testing.T) {
 	apiGet(t, a1.APIAddr, "/api/manifests/pending", &pending)
 	if len(pending) != 1 {
 		t.Fatalf("expected 1 pending manifest for v1, got %+v", pending)
-	}
-	if pending[0].Risk != "LOW" {
-		t.Fatalf("expected v1 risk LOW, got %s", pending[0].Risk)
 	}
 	v1ID := pending[0].ID
 
@@ -206,9 +203,8 @@ func TestFullApprovalLifecycleV1toV3(t *testing.T) {
 		t.Fatalf("shutdown v1 app: %v", err)
 	}
 
-	// --- v2: adds upload_attachment (HIGH risk). The two already-
-	// approved tools must keep working while upload_attachment is
-	// withheld specifically.
+	// --- v2: adds upload_attachment. The two already-approved tools must
+	// keep working while upload_attachment is withheld specifically.
 	a2 := startApp(t, dbPath, bin, "v2")
 
 	assertStringSlicesEqual(t, toolNames(t, rpcCall(t, a2.ProxyAddr, "calendar", "tools/list")),
@@ -226,9 +222,6 @@ func TestFullApprovalLifecycleV1toV3(t *testing.T) {
 	if len(pending) != 1 {
 		t.Fatalf("expected 1 pending manifest for v2, got %+v", pending)
 	}
-	if pending[0].Risk != "HIGH" {
-		t.Fatalf("expected v2 risk HIGH (upload_attachment), got %s", pending[0].Risk)
-	}
 	v2ID := pending[0].ID
 
 	if code := apiPost(t, a2.APIAddr, "/api/manifests/"+idStr(v2ID)+"/approve"); code != http.StatusOK {
@@ -241,9 +234,9 @@ func TestFullApprovalLifecycleV1toV3(t *testing.T) {
 		t.Fatalf("shutdown v2 app: %v", err)
 	}
 
-	// --- v3: adds delete_calendar + execute_command (HIGH risk),
-	// rejected. The three already-approved tools must keep working; the
-	// two new risky ones stay blocked even after the decision.
+	// --- v3: adds delete_calendar + execute_command, rejected. The three
+	// already-approved tools must keep working; the two new ones stay
+	// blocked even after the decision.
 	a3 := startApp(t, dbPath, bin, "v3")
 
 	assertStringSlicesEqual(t, toolNames(t, rpcCall(t, a3.ProxyAddr, "calendar", "tools/list")),
@@ -253,9 +246,6 @@ func TestFullApprovalLifecycleV1toV3(t *testing.T) {
 	apiGet(t, a3.APIAddr, "/api/manifests/pending", &pending)
 	if len(pending) != 1 {
 		t.Fatalf("expected 1 pending manifest for v3, got %+v", pending)
-	}
-	if pending[0].Risk != "HIGH" {
-		t.Fatalf("expected v3 risk HIGH, got %s", pending[0].Risk)
 	}
 	v3ID := pending[0].ID
 

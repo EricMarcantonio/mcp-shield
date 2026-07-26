@@ -97,7 +97,7 @@ func handleLine(line []byte, tools []mcp.Tool) {
 	switch req.Method {
 	case mcp.MethodInitialize:
 		result, _ := json.Marshal(mcp.InitializeResult{
-			ProtocolVersion: "2024-11-05",
+			ProtocolVersion: mcp.ProtocolVersion,
 			ServerInfo:      mcp.ServerInfo{Name: "mcp-shield-testserver", Version: "0.1.0"},
 		})
 		resp.Result = result

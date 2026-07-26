@@ -1,0 +1,45 @@
+{{/*
+Defense in depth for the unauthenticated approval API/dashboard (:8081).
+The client-facing proxy port is always allowed from anywhere (that's the
+port AI clients are meant to reach); the dashboard port only gets an
+ingress rule at all when dashboard.networkPolicy.allowFrom is non-empty.
+An empty allow-list is deliberate: once a NetworkPolicy selects a pod for
+Ingress, any port with zero matching rules is default-denied, so leaving
+allowFrom empty makes :8081 unreachable over the pod network from
+anywhere -- including other pods in the same namespace. The safe way to
+reach it in that state is `kubectl port-forward`, which attaches to the
+pod's network namespace directly and is not subject to NetworkPolicy at
+all.
+
+Caveat worth knowing rather than assuming away: this relies on your CNI
+enforcing NetworkPolicy for pod-to-pod traffic on :8081 while still letting
+kubelet's own liveness/readiness probes reach the pod directly. Every major
+CNI (Calico, Cilium, Antrea) does exactly that -- probes come from the
+node, not through the overlay -- but if you're on something exotic, verify
+probes still pass after enabling this.
+*/}}
+{{- if .Values.dashboard.networkPolicy.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "mcp-shield.fullname" . }}
+  labels:
+    {{- include "mcp-shield.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "mcp-shield.selectorLabels" . | nindent 6 }}
+  policyTypes:
+    - Ingress
+  ingress:
+    - ports:
+        - port: {{ .Values.proxy.service.port }}
+          protocol: TCP
+    {{- if .Values.dashboard.networkPolicy.allowFrom }}
+    - ports:
+        - port: {{ .Values.dashboard.service.port }}
+          protocol: TCP
+      from:
+        {{- toYaml .Values.dashboard.networkPolicy.allowFrom | nindent 8 }}
+    {{- end }}
+{{- end }}

@@ -17,13 +17,12 @@
   {{else}}
   <table>
     <thead>
-      <tr><th>Server</th><th>Risk</th><th>Hash</th><th>Changes</th><th>Seen</th><th></th></tr>
+      <tr><th>Server</th><th>Hash</th><th>Changes</th><th>Seen</th><th></th></tr>
     </thead>
     <tbody>
       {{range .Pending}}
-      <tr class="risk-{{.Risk}}">
+      <tr>
         <td>{{.Server}}</td>
-        <td><span class="badge risk-{{.Risk}}">{{.Risk}}</span></td>
         <td class="hash"><a href="/manifests/{{.ID}}">{{printf "%.12s" .Hash}}</a></td>
         <td>
           <ul class="changes">

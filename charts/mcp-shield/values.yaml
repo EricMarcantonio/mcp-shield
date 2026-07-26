@@ -1,0 +1,375 @@
+## mcp-shield Helm chart values.
+## See charts/mcp-shield/README.md for a guided walkthrough. Every value
+## below has a comment explaining what it does and what changing it costs
+## you -- read it before you flip it, especially anything under
+## `dashboard` and `persistence`.
+
+# -- Number of gateway replicas. HARD-PINNED to 1: mcp-shield's only state
+# is a single SQLite file (see `persistence` below), and SQLite does not
+# support safe concurrent writers across multiple processes sharing one
+# file. Running more than one replica risks corrupting the approvals audit
+# trail -- who authorized which capability change. This chart refuses to
+# render (see templates/_helpers.tpl `mcp-shield.assertSingleReplica`) if
+# you set this above 1; there is no supported way to scale this chart
+# horizontally. If you need HA, the project's own extension seam is
+# `database.Store` (an interface) backed by Postgres instead -- that is a
+# different deployment, not a flag on this one.
+replicaCount: 1
+
+image:
+  # -- Container image repository. Published by GoReleaser/Docker Buildx to
+  # GHCR on every vX.Y.Z tag (see ../../.goreleaser.yaml). Point this at a
+  # fork or private mirror if you need one; it doesn't change anything
+  # else the chart deploys.
+  repository: ghcr.io/ericmarcantonio/mcp-shield
+  # -- Image pull policy. IfNotPresent avoids re-pulling an already-cached
+  # tag on every pod restart. Only use Always if you're deploying a
+  # mutable tag (e.g. `latest`) and need every restart to fetch whatever
+  # it currently points at -- not recommended outside a throwaway demo,
+  # since it makes "what's actually running" unpredictable.
+  pullPolicy: IfNotPresent
+  # -- Image tag to deploy. Empty string means "use Chart.appVersion",
+  # which the release workflow keeps in lockstep with the chart's own
+  # version and the git tag that triggered the release. Only set this by
+  # hand to pin an older release or test an unpublished build.
+  tag: ""
+
+# -- Image pull secrets, for a private registry. Needed today because
+# ghcr.io/ericmarcantonio/mcp-shield is private; once the package's
+# visibility is flipped to public (a separate step from making the repo
+# public -- see README's Install section) this can go back to empty.
+# Example:
+#   imagePullSecrets:
+#     - name: ghcr-pull-secret
+imagePullSecrets: []
+
+# -- Overrides the chart name used to build object names. Leave empty
+# unless you're doing something unusual.
+nameOverride: ""
+# -- Overrides the full release name used to build object names. Leave
+# empty unless you're installing multiple releases into one namespace and
+# need to keep their object names from colliding.
+fullnameOverride: ""
+
+serviceAccount:
+  # -- Whether to create a dedicated ServiceAccount. mcp-shield never
+  # calls the Kubernetes API (it only proxies MCP traffic and spawns
+  # upstream server subprocesses), so it needs zero RBAC permissions --
+  # this exists purely so the pod isn't silently running as `default` in
+  # its namespace, which may carry bindings you didn't intend to grant it.
+  create: true
+  # -- Extra annotations on the ServiceAccount, e.g. for a cloud provider's
+  # workload-identity binding if a future build needs to reach a secrets
+  # manager for `config.existingSecret`-style credential injection.
+  annotations: {}
+  # -- Name of the ServiceAccount to use. Auto-generated from the release
+  # name when empty and `create: true`.
+  name: ""
+
+# -- Extra labels/annotations merged onto the pod template. Useful for a
+# service mesh sidecar injector (Istio, Linkerd) that keys off pod labels,
+# or a metrics scraper that keys off annotations.
+podAnnotations: {}
+podLabels: {}
+
+podSecurityContext:
+  # -- Refuses to start the pod as UID 0. The distroless image never needs
+  # root; this only guards against a misconfigured image override
+  # slipping a root-requiring process in unnoticed.
+  runAsNonRoot: true
+  # -- UID the process runs as. 65532 is the conventional "nonroot" UID
+  # used across gcr.io/distroless/*:nonroot images. It doesn't need an
+  # /etc/passwd entry -- the Go binary never looks itself up by username.
+  runAsUser: 65532
+  # -- GID the process runs as. Paired with `fsGroup` below so the process
+  # and its writable volumes agree on group ownership.
+  runAsGroup: 65532
+  # -- Kubernetes chowns/chmods every volume mounted into this pod
+  # (the SQLite PVC, the servers.json Secret) to this GID before the
+  # container starts. Without it, a freshly provisioned PVC -- typically
+  # owned root:root by the CSI driver -- leaves a non-root process unable
+  # to create DATABASE_PATH, and the pod crash-loops on first start.
+  fsGroup: 65532
+  # -- RuntimeDefault applies whatever seccomp profile the node's
+  # container runtime ships (a broad syscall allow-list with the
+  # genuinely dangerous calls removed). Supported on every Kubernetes
+  # version this chart targets; rarely worth overriding.
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  # -- Drops every Linux capability. The gateway opens two TCP listeners,
+  # reads its config, and spawns upstream MCP servers as plain
+  # subprocesses -- none of that needs anything beyond the unprivileged
+  # default, so there is nothing to add back.
+  capabilities:
+    drop:
+      - ALL
+  # -- Blocks the container from ever gaining more privileges than its
+  # parent process has (e.g. via a setuid binary in its image). Not
+  # exercised by today's distroless image, but free insurance against a
+  # future dependency that isn't as clean.
+  allowPrivilegeEscalation: false
+  # -- Mounts the container's root filesystem read-only. Safe here because
+  # mcp-shield only ever writes to DATABASE_PATH (on the persistence
+  # volume below) -- the binary, and web/dashboard/{templates,static},
+  # are baked into the image and never written to at runtime. If a future
+  # change needs scratch space, add an `extraVolumes` emptyDir mount
+  # rather than flipping this back to false.
+  readOnlyRootFilesystem: true
+
+resources:
+  # -- No default requests/limits. Left blank on purpose: a guessed limit
+  # either throttles a process sitting in the hot path of every MCP call
+  # (CPU limit too low) or gets it OOMKilled mid-burst (memory limit too
+  # low), and a wrong guess is worse than no guess. Set these once you've
+  # observed your own workload, e.g.:
+  #   resources:
+  #     requests: { cpu: 100m, memory: 64Mi }
+  #     limits: { memory: 256Mi }
+  {}
+
+# -- Standard pod scheduling knobs, passed through verbatim.
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+persistence:
+  # -- Whether the SQLite database is backed by a PersistentVolumeClaim.
+  # When false, the database lives on an emptyDir: every pod restart or
+  # reschedule starts from a blank database, and every upstream server
+  # has to be re-approved from scratch. Only appropriate for a disposable
+  # demo -- turn this on for anything where the approvals audit trail
+  # (who authorized which capability change) needs to survive a restart.
+  enabled: true
+  # -- Requested PVC size. mcp-shield's database holds server rows,
+  # manifest rows (one per distinct capability set ever seen per server),
+  # and an approvals audit log -- all small, text-heavy rows. 1Gi is
+  # generous headroom for a long-running install with many servers and a
+  # deep approval history; shrink it if you know your fleet is tiny.
+  size: 1Gi
+  # -- StorageClass for the PVC. Empty string uses the cluster's default
+  # StorageClass. Set explicitly if your cluster's default isn't suitable
+  # (e.g. you need a non-default class that actually supports volume
+  # snapshots for backing up the audit trail).
+  storageClassName: ""
+  # -- PVC access mode. ReadWriteOnce is deliberate, not a placeholder:
+  # it's what makes most CSI drivers refuse to attach this volume to more
+  # than one node at a time, which is a second independent guard (after
+  # `replicaCount` above) against two processes ever opening the same
+  # SQLite file concurrently. Do not change this to ReadWriteMany --
+  # that removes the guard and makes concurrent-writer corruption possible
+  # even with replicaCount pinned to 1, if a rollout's old and new pod
+  # ever briefly overlap on different nodes.
+  accessMode: ReadWriteOnce
+  # -- Name of a PVC you already manage (e.g. restored from a
+  # VolumeSnapshot, or provisioned by a backup tool), used instead of the
+  # PVC this chart would otherwise create. Leave empty to let the chart
+  # create and own the PVC.
+  existingClaim: ""
+  # -- Path inside the container the PVC is mounted at. `database.path`
+  # below must live under this directory. Kubernetes creates this
+  # directory as part of mounting the volume, before the container's
+  # entrypoint ever runs -- which is what keeps mcp-shield from hitting
+  # its known "parent directory of DATABASE_PATH must already exist" first
+  # -run failure mode (tracked as a separate bug fix, not something this
+  # chart depends on).
+  mountPath: /data
+
+database:
+  # -- Container path to the SQLite file (the DATABASE_PATH env var).
+  # Must be a path under `persistence.mountPath` so it's actually backed
+  # by the PVC -- if you change one, change the other to match.
+  path: /data/mcp.db
+
+config:
+  # -- How the upstream server list (config/servers.json's schema --
+  # name/command/args/env, see config/servers.example.json in the repo
+  # root) reaches the container: "secret" (default) or "configmap".
+  # Defaults to Secret because each entry's `env` array is mcp-shield's
+  # documented hook for injecting per-upstream credentials (see the
+  # README's "Explicitly out of scope for this MVP" section) -- e.g.
+  # `env: ["API_KEY=xyz"]`. A Kubernetes Secret at least signals
+  # "sensitive" to RBAC and to redaction tooling around `kubectl get -o
+  # yaml`; a ConfigMap does not. Only set this to "configmap" if you are
+  # certain no server you configure ever carries a credential in `env`.
+  type: secret
+  # -- Inline server definitions, rendered verbatim as servers.json.
+  # Empty by default -- the gateway starts fine with zero configured
+  # servers, it just proxies nothing until you add one (see
+  # cmd/mcp-shield/main.go's `loadServerConfig`). Example:
+  #   servers:
+  #     - name: calendar
+  #       command: /app/bin/some-upstream-server
+  #       args: ["--flag"]
+  #       env: ["API_KEY=changeme"]
+  # WARNING: values.yaml (and anything captured by `helm get values`) is
+  # not a secrets store. Whatever you put in an `env` entry here lands in
+  # this file and in your Helm release's stored values. For a real
+  # credential, prefer `existingSecret` below, populated out-of-band by
+  # `kubectl create secret`, an external-secrets operator, or
+  # sealed-secrets -- not by templating it through Helm.
+  servers: []
+  # -- Name of a pre-existing Secret (or ConfigMap, matching `type` above)
+  # that already has a `servers.json` key. Takes precedence over
+  # `servers`: when set, this chart does not render its own Secret/
+  # ConfigMap, and you own that object's lifecycle instead.
+  existingSecret: ""
+  # -- Container path the rendered servers.json is mounted at. Must stay
+  # in sync with `env.configPath` below -- change both together.
+  mountPath: /etc/mcp-shield/config
+
+env:
+  # -- CONFIG_PATH: where mcp-shield looks for servers.json. Must equal
+  # `config.mountPath` + `/servers.json`.
+  configPath: /etc/mcp-shield/config/servers.json
+  # -- FAIL_MODE: `block` (default, fail-closed -- new or changed
+  # capabilities are withheld until a human approves them) or `warn`
+  # (everything is let through regardless of approval state). The
+  # project's own docs (docs/security-model.md) call `warn` something to
+  # use only "for initial rollout observation" and explicitly "never the
+  # production default" -- treat it the same way here.
+  failMode: block
+
+# -- Additional raw environment variables (list of {name, value} or
+# {name, valueFrom}), appended after the ones this chart sets above. Use
+# for e.g. TEMPLATES_DIR if you bake a custom dashboard theme into a
+# derived image.
+extraEnv: []
+
+# -- Extra volumes/volumeMounts, for anything this chart doesn't model
+# directly -- e.g. a scratch emptyDir if a future dependency needs
+# writable space outside DATABASE_PATH under readOnlyRootFilesystem.
+extraVolumes: []
+extraVolumeMounts: []
+
+proxy:
+  service:
+    # -- Service type for the client-facing MCP proxy (:8080). This is
+    # the port meant for AI clients to reach, so ClusterIP (cluster-
+    # internal only) is a starting point, not a security boundary the way
+    # dashboard.service.type is -- change this to whatever fits how your
+    # clients actually connect (a mesh, a LoadBalancer behind your own
+    # auth/mTLS termination, etc.).
+    type: ClusterIP
+    # -- Port the proxy Service listens on and forwards to the
+    # container's :8080. Changing this does not change the container's
+    # own listen port (PROXY_ADDR is fixed at :8080 in templates/
+    # deployment.yaml); it only changes how the Service is addressed.
+    port: 8080
+
+dashboard:
+  service:
+    # -- Service type for the approval API/dashboard (:8081).
+    #
+    # THIS PORT HAS NO AUTHENTICATION OF ANY KIND. Anyone who can reach
+    # it can list, approve, or reject pending capability changes for
+    # every upstream server this gateway proxies -- see
+    # docs/security-model.md and the README's deployment warning. Leaving
+    # this at ClusterIP keeps it off any external load balancer or node
+    # port; the safe way to reach it as an operator is
+    # `kubectl port-forward` (see this chart's NOTES.txt after install).
+    #
+    # If you change this to NodePort or LoadBalancer, you are opting into
+    # exposing an unauthenticated approve/reject API to whatever network
+    # that NodePort/LoadBalancer is reachable from -- put your own
+    # authenticating proxy (oauth2-proxy, an API gateway, mTLS) in front
+    # of it before you do, and consider narrowing
+    # `dashboard.networkPolicy.allowFrom` to match.
+    type: ClusterIP
+    # -- Port the dashboard Service listens on and forwards to the
+    # container's :8081. Changing this does not change the container's
+    # own listen port (API_ADDR is fixed at :8081 in templates/
+    # deployment.yaml); it only changes how the Service is addressed.
+    port: 8081
+
+  ingress:
+    # -- Whether to create an Ingress for the dashboard Service. FALSE BY
+    # DEFAULT AND SHOULD STAY THAT WAY UNLESS YOU HAVE ALREADY PUT
+    # AUTHENTICATION IN FRONT OF IT. Turning this on makes the
+    # unauthenticated approve/reject API reachable at `hosts` below to
+    # anyone who can resolve and route to that hostname -- typically the
+    # public internet, if your ingress controller has a public
+    # LoadBalancer. If you turn this on, also configure your ingress
+    # controller's own auth layer (oauth2-proxy, basic-auth annotation,
+    # client-certificate/mTLS) -- this chart does not add one for you.
+    enabled: false
+    # -- IngressClass to use (e.g. "nginx", "traefik"). Empty uses the
+    # cluster's default IngressClass.
+    className: ""
+    # -- Extra annotations on the Ingress object. This is typically where
+    # an auth layer actually gets wired in, e.g. for ingress-nginx:
+    #   annotations:
+    #     nginx.ingress.kubernetes.io/auth-url: "https://oauth2-proxy.example.com/oauth2/auth"
+    annotations: {}
+    # -- Hostnames and paths to route to the dashboard Service. Only used
+    # when `enabled: true`. Example:
+    #   hosts:
+    #     - host: mcp-shield-approvals.internal.example.com
+    #       paths:
+    #         - path: /
+    #           pathType: Prefix
+    hosts: []
+    # -- TLS configuration, passed through verbatim to the Ingress spec.
+    # Example:
+    #   tls:
+    #     - secretName: mcp-shield-dashboard-tls
+    #       hosts: ["mcp-shield-approvals.internal.example.com"]
+    tls: []
+
+  networkPolicy:
+    # -- Whether to create a NetworkPolicy restricting who can reach
+    # :8081 over the pod network. Defaults to true as defense in depth
+    # alongside the ClusterIP Service/disabled Ingress above -- only
+    # takes effect if your cluster's CNI enforces NetworkPolicy (Calico,
+    # Cilium, Antrea, etc. all do; a cluster with no NetworkPolicy
+    # controller silently ignores this object, so it's safe to leave
+    # enabled even if you're not sure).
+    enabled: true
+    # -- NetworkPolicy `from` peers allowed to reach :8081, using the
+    # standard NetworkPolicyPeer schema (podSelector/namespaceSelector/
+    # ipBlock). Empty by default: because a NetworkPolicy that selects a
+    # pod for Ingress default-denies any port with no matching rule,
+    # leaving this empty makes :8081 unreachable from anywhere on the pod
+    # network -- including other pods in this namespace. The intended way
+    # to reach the dashboard in that state is `kubectl port-forward`,
+    # which attaches to the pod directly and isn't subject to
+    # NetworkPolicy. Only add entries here if you have a specific,
+    # trusted in-cluster caller (e.g. an internal approval-automation
+    # pod) that needs direct network access instead of port-forward.
+    # Example:
+    #   allowFrom:
+    #     - namespaceSelector:
+    #         matchLabels:
+    #           kubernetes.io/metadata.name: mcp-shield-operators
+    allowFrom: []
+
+probes:
+  # -- Both liveness and readiness point at :8081/healthz -- the only HTTP
+  # health endpoint mcp-shield exposes today (internal/api/handlers.go's
+  # handleHealthz). It's a shallow check: it confirms the API HTTP server
+  # is up and responding, not that the SQLite database or any upstream
+  # MCP server is healthy -- there's no deeper endpoint to point at yet.
+  # kubelet talks to the pod IP directly for probes rather than routing
+  # through the dashboard Service, so these keep working even with
+  # dashboard.networkPolicy.enabled: true and an empty allowFrom -- see
+  # the caveat in templates/networkpolicy.yaml if you're on an unusual CNI.
+  liveness:
+    enabled: true
+    initialDelaySeconds: 5
+    periodSeconds: 10
+    timeoutSeconds: 3
+    failureThreshold: 3
+  readiness:
+    enabled: true
+    initialDelaySeconds: 5
+    periodSeconds: 10
+    timeoutSeconds: 3
+    failureThreshold: 3
+
+tests:
+  # -- Image used by the `helm test` connectivity check (templates/tests/
+  # test-connection.yaml) to curl :8081/healthz. Separate from the
+  # mcp-shield image itself because that image is distroless and has no
+  # shell or HTTP client to run the check with.
+  image: busybox:1.37.0

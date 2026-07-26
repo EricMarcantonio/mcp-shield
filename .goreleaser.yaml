@@ -1,0 +1,66 @@
+version: 2
+project_name: mcp-shield
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  # Only the mcp-shield binary is a release artifact. cmd/mcp-shield-testserver
+  # is a test fixture used by `make build`/manual testing, not something an
+  # end user installs; it is deliberately left out of releases and images.
+  - id: mcp-shield
+    main: ./cmd/mcp-shield
+    binary: mcp-shield
+    env:
+      - CGO_ENABLED=0 # modernc.org/sqlite is pure Go; this is what makes cross-compilation config-only
+    goos: [linux, darwin, windows]
+    goarch: [amd64, arm64]
+    ldflags:
+      - -s -w -X main.version={{.Version}}
+
+archives:
+  - formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    files:
+      - LICENSE
+      - README.md
+      - web/**/*
+      - config/*.example.json
+
+checksum:
+  name_template: checksums.txt
+
+changelog:
+  use: github
+
+dockers:
+  # Repository is private today (D4): images publish to GHCR under this
+  # project's org, but won't be anonymously pullable until the repo (and its
+  # package visibility) is made public. See release.yml for the same note.
+  - goarch: amd64
+    dockerfile: Dockerfile.goreleaser
+    image_templates:
+      - ghcr.io/ericmarcantonio/mcp-shield:{{ .Version }}-amd64
+    build_flag_templates:
+      - --platform=linux/amd64
+    extra_files: [web]
+  - goarch: arm64
+    dockerfile: Dockerfile.goreleaser
+    image_templates:
+      - ghcr.io/ericmarcantonio/mcp-shield:{{ .Version }}-arm64
+    build_flag_templates:
+      - --platform=linux/arm64
+    extra_files: [web]
+
+docker_manifests:
+  - name_template: ghcr.io/ericmarcantonio/mcp-shield:{{ .Version }}
+    image_templates:
+      - ghcr.io/ericmarcantonio/mcp-shield:{{ .Version }}-amd64
+      - ghcr.io/ericmarcantonio/mcp-shield:{{ .Version }}-arm64
+  - name_template: ghcr.io/ericmarcantonio/mcp-shield:latest
+    image_templates:
+      - ghcr.io/ericmarcantonio/mcp-shield:{{ .Version }}-amd64
+      - ghcr.io/ericmarcantonio/mcp-shield:{{ .Version }}-arm64

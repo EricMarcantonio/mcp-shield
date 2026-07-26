@@ -7,6 +7,13 @@ import "encoding/json"
 
 const JSONRPCVersion = "2.0"
 
+// ProtocolVersion is the single MCP specification revision this gateway
+// speaks, both upstream (in the initialize request it sends) and downstream
+// (in the initialize result it returns). 2025-11-25 is the current stable
+// revision; the gateway deliberately does not negotiate versions yet. See
+// decision D7 in docs/superpowers/specs/2026-07-25-oss-hardening-design.md.
+const ProtocolVersion = "2025-11-25"
+
 // Request is a JSON-RPC 2.0 request or notification (ID nil => notification).
 type Request struct {
 	JSONRPC string          `json:"jsonrpc"`

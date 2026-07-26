@@ -1,0 +1,44 @@
+{{/*
+Ingress for the approval API/dashboard. Disabled by default -- see the
+loud warning on dashboard.ingress.enabled in values.yaml before flipping
+this on. There is intentionally no ingress template for the proxy port:
+:8080 is meant to be reached by whatever fronts your AI clients, which is
+deployment-specific enough (mTLS terminator, service mesh, a plain
+LoadBalancer Service) that this chart doesn't guess; use
+proxy.service.type or bring your own Ingress/Gateway object for it.
+*/}}
+{{- if .Values.dashboard.ingress.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "mcp-shield.fullname" . }}-dashboard
+  labels:
+    {{- include "mcp-shield.labels" . | nindent 4 }}
+  {{- with .Values.dashboard.ingress.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- if .Values.dashboard.ingress.className }}
+  ingressClassName: {{ .Values.dashboard.ingress.className }}
+  {{- end }}
+  {{- if .Values.dashboard.ingress.tls }}
+  tls:
+    {{- toYaml .Values.dashboard.ingress.tls | nindent 4 }}
+  {{- end }}
+  rules:
+    {{- range .Values.dashboard.ingress.hosts }}
+    - host: {{ .host | quote }}
+      http:
+        paths:
+          {{- range .paths }}
+          - path: {{ .path }}
+            pathType: {{ .pathType | default "Prefix" }}
+            backend:
+              service:
+                name: {{ include "mcp-shield.fullname" $ }}-dashboard
+                port:
+                  number: {{ $.Values.dashboard.service.port }}
+          {{- end }}
+    {{- end }}
+{{- end }}

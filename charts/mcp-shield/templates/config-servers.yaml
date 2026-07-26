@@ -1,0 +1,28 @@
+{{/*
+Renders the upstream server list (config/servers.json's schema: name/
+command/args/env) as either a Secret or a ConfigMap, chosen by
+config.type. Skipped entirely when config.existingSecret is set -- the
+operator owns that object's lifecycle instead.
+
+Defaults to Secret: each entry's `env` array is mcp-shield's documented
+hook for injecting per-upstream credentials (README, "Explicitly out of
+scope for this MVP"), so the common case does carry secret material even
+though the schema itself doesn't distinguish "credential" from "any other
+env var".
+*/}}
+{{- if not .Values.config.existingSecret }}
+{{- $data := dict "servers.json" (toJson .Values.config.servers) }}
+apiVersion: v1
+kind: {{ eq .Values.config.type "configmap" | ternary "ConfigMap" "Secret" }}
+metadata:
+  name: {{ include "mcp-shield.configObjectName" . }}
+  labels:
+    {{- include "mcp-shield.labels" . | nindent 4 }}
+{{- if eq .Values.config.type "configmap" }}
+data:
+  {{- $data | toYaml | nindent 2 }}
+{{- else }}
+stringData:
+  {{- $data | toYaml | nindent 2 }}
+{{- end }}
+{{- end }}

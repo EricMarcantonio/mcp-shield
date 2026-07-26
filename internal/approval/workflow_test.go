@@ -17,7 +17,7 @@ func newTestWorkflow(t *testing.T) (*Workflow, database.Store, int64) {
 	if err != nil {
 		t.Fatalf("open db: %v", err)
 	}
-	t.Cleanup(func() { store.Close() })
+	t.Cleanup(func() { _ = store.Close() })
 
 	srv, err := store.CreateServer(context.Background(), "calendar", "")
 	if err != nil {
@@ -26,17 +26,22 @@ func newTestWorkflow(t *testing.T) (*Workflow, database.Store, int64) {
 	return New(store, FailModeBlock), store, srv.ID
 }
 
-func toolManifest(names ...string) *manifest.Manifest {
+func toolManifest(t *testing.T, names ...string) *manifest.Manifest {
+	t.Helper()
 	tools := make([]mcp.Tool, len(names))
 	for i, n := range names {
 		tools[i] = mcp.Tool{Name: n}
 	}
-	return manifest.Build(tools, nil, nil)
+	m, err := manifest.Build(tools, nil, nil)
+	if err != nil {
+		t.Fatalf("build manifest: %v", err)
+	}
+	return m
 }
 
 func TestCheckAndRecordFirstManifestIsPendingAndFullyBlocked(t *testing.T) {
 	wf, _, serverID := newTestWorkflow(t)
-	m := toolManifest("calendar_read", "calendar_create")
+	m := toolManifest(t, "calendar_read", "calendar_create")
 
 	res, err := wf.CheckAndRecord(context.Background(), serverID, m)
 	if err != nil {
@@ -61,7 +66,7 @@ func TestCheckAndRecordFirstManifestIsPendingAndFullyBlocked(t *testing.T) {
 func TestApproveThenSameHashIsFullyAllowed(t *testing.T) {
 	ctx := context.Background()
 	wf, _, serverID := newTestWorkflow(t)
-	m := toolManifest("calendar_read", "calendar_create")
+	m := toolManifest(t, "calendar_read", "calendar_create")
 
 	first, err := wf.CheckAndRecord(ctx, serverID, m)
 	if err != nil {
@@ -90,13 +95,13 @@ func TestApproveSupersedesPriorApproved(t *testing.T) {
 	ctx := context.Background()
 	wf, store, serverID := newTestWorkflow(t)
 
-	v1 := toolManifest("calendar_read", "calendar_create")
+	v1 := toolManifest(t, "calendar_read", "calendar_create")
 	r1, _ := wf.CheckAndRecord(ctx, serverID, v1)
 	if err := wf.Approve(ctx, r1.ManifestID, "eric", ""); err != nil {
 		t.Fatalf("approve v1: %v", err)
 	}
 
-	v2 := toolManifest("calendar_read", "calendar_create", "upload_attachment")
+	v2 := toolManifest(t, "calendar_read", "calendar_create", "upload_attachment")
 	r2, _ := wf.CheckAndRecord(ctx, serverID, v2)
 	if err := wf.Approve(ctx, r2.ManifestID, "eric", ""); err != nil {
 		t.Fatalf("approve v2: %v", err)
@@ -122,7 +127,7 @@ func TestApproveSupersedesPriorApproved(t *testing.T) {
 func TestRejectLeavesBlocked(t *testing.T) {
 	ctx := context.Background()
 	wf, _, serverID := newTestWorkflow(t)
-	m := toolManifest("delete_calendar", "execute_command")
+	m := toolManifest(t, "delete_calendar", "execute_command")
 
 	first, _ := wf.CheckAndRecord(ctx, serverID, m)
 	if err := wf.Reject(ctx, first.ManifestID, "eric", "too risky"); err != nil {
@@ -151,13 +156,13 @@ func TestRejectedChangeStillAllowsUnchangedTools(t *testing.T) {
 	ctx := context.Background()
 	wf, _, serverID := newTestWorkflow(t)
 
-	baseline := toolManifest("calendar_read", "calendar_create")
+	baseline := toolManifest(t, "calendar_read", "calendar_create")
 	r1, _ := wf.CheckAndRecord(ctx, serverID, baseline)
 	if err := wf.Approve(ctx, r1.ManifestID, "eric", ""); err != nil {
 		t.Fatalf("approve baseline: %v", err)
 	}
 
-	risky := toolManifest("calendar_read", "calendar_create", "delete_calendar", "execute_command")
+	risky := toolManifest(t, "calendar_read", "calendar_create", "delete_calendar", "execute_command")
 	r2, err := wf.CheckAndRecord(ctx, serverID, risky)
 	if err != nil {
 		t.Fatalf("check risky: %v", err)
@@ -184,7 +189,7 @@ func TestRejectedChangeStillAllowsUnchangedTools(t *testing.T) {
 func TestApproveNonPendingIsRejected(t *testing.T) {
 	ctx := context.Background()
 	wf, _, serverID := newTestWorkflow(t)
-	m := toolManifest("calendar_read")
+	m := toolManifest(t, "calendar_read")
 
 	first, _ := wf.CheckAndRecord(ctx, serverID, m)
 	if err := wf.Approve(ctx, first.ManifestID, "eric", ""); err != nil {
@@ -200,7 +205,7 @@ func TestApproveNonPendingIsRejected(t *testing.T) {
 func TestRejectNonPendingIsRejected(t *testing.T) {
 	ctx := context.Background()
 	wf, _, serverID := newTestWorkflow(t)
-	m := toolManifest("calendar_read")
+	m := toolManifest(t, "calendar_read")
 
 	first, _ := wf.CheckAndRecord(ctx, serverID, m)
 	if err := wf.Reject(ctx, first.ManifestID, "eric", "no"); err != nil {
@@ -217,11 +222,11 @@ func TestFailModeWarnAllowsButFlags(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open db: %v", err)
 	}
-	t.Cleanup(func() { store.Close() })
+	t.Cleanup(func() { _ = store.Close() })
 	srv, _ := store.CreateServer(ctx, "calendar", "")
 
 	wf := New(store, FailModeWarn)
-	m := toolManifest("calendar_read")
+	m := toolManifest(t, "calendar_read")
 
 	res, err := wf.CheckAndRecord(ctx, srv.ID, m)
 	if err != nil {

@@ -1,29 +1,13 @@
-// Package diff compares two manifests and classifies the risk of the
-// difference so a human approver can quickly judge whether a capability
-// change is safe.
+// Package diff compares two manifests and reports what was added, removed,
+// or changed so a human approver can judge whether a capability change is
+// safe.
 package diff
 
 import (
 	"encoding/json"
 	"sort"
-	"strings"
 
 	"github.com/EricMarcantonio/mcp-shield/internal/manifest"
-)
-
-// riskKeywords are substrings (case-insensitive) that mark a newly added
-// tool as HIGH risk. This is a deliberately blunt heuristic: it will flag
-// legitimate tools like "filesystem_status" (contains "file") as HIGH too
-// — that's the literal rule as specified, not a bug to be silently
-// patched. A human still makes the final call in the approval workflow.
-var riskKeywords = []string{
-	"delete", "upload", "execute", "shell", "file", "write", "admin", "credential",
-}
-
-const (
-	RiskLow    = "LOW"
-	RiskMedium = "MEDIUM"
-	RiskHigh   = "HIGH"
 )
 
 type ToolChange struct {
@@ -59,78 +43,88 @@ type Diff struct {
 	ChangedResources []ResourceChange `json:"changed_resources"`
 }
 
-// Compare returns the diff from old to new. old may be nil, meaning there
-// is no prior approved baseline — every tool/prompt/resource in new is
-// then reported as added.
-func Compare(old, new *manifest.Manifest) *Diff {
+// Compare returns the diff from baseline to current. baseline may be nil,
+// meaning there is no prior approved baseline — every tool/prompt/resource
+// in current is then reported as added.
+func Compare(baseline, current *manifest.Manifest) *Diff {
 	d := &Diff{
 		AddedTools: []string{}, RemovedTools: []string{}, ChangedTools: []ToolChange{},
 		AddedPrompts: []string{}, RemovedPrompts: []string{}, ChangedPrompts: []PromptChange{},
 		AddedResources: []string{}, RemovedResources: []string{}, ChangedResources: []ResourceChange{},
 	}
-	if new == nil {
+	if current == nil {
 		return d
 	}
 
-	var oldTools []mcpTool
-	var oldPrompts []mcpPrompt
-	var oldResources []mcpResource
-	if old != nil {
-		oldTools = toolsOf(old)
-		oldPrompts = promptsOf(old)
-		oldResources = resourcesOf(old)
+	var baseTools []mcpTool
+	var basePrompts []mcpPrompt
+	var baseResources []mcpResource
+	if baseline != nil {
+		baseTools = toolsOf(baseline)
+		basePrompts = promptsOf(baseline)
+		baseResources = resourcesOf(baseline)
 	}
 
-	diffTools(d, oldTools, toolsOf(new))
-	diffPrompts(d, oldPrompts, promptsOf(new))
-	diffResources(d, oldResources, resourcesOf(new))
+	diffTools(d, baseTools, toolsOf(current))
+	diffPrompts(d, basePrompts, promptsOf(current))
+	diffResources(d, baseResources, resourcesOf(current))
 
 	return d
 }
 
-// ClassifyRisk applies the spec's precedence rule:
-//  1. HIGH  — any added tool's name substring-matches a risk keyword.
-//  2. MEDIUM — else, any changed tool's input schema differs.
-//  3. LOW    — else, any changed tool's description differs (or nothing
-//     risk-relevant changed, e.g. only prompts/resources touched).
-func ClassifyRisk(d *Diff) (risk string, reasons []string) {
+// Summarize renders a Diff as short human-readable lines, e.g. "Added
+// tool: upload_attachment" — used anywhere a diff needs to be shown to a
+// person or included in a notification (dashboard, API, webhook) without
+// duplicating this formatting in each of those callers.
+func Summarize(d *Diff) []string {
+	var out []string
 	for _, name := range d.AddedTools {
-		lower := strings.ToLower(name)
-		for _, kw := range riskKeywords {
-			if strings.Contains(lower, kw) {
-				reasons = append(reasons, "added tool \""+name+"\" matches risk keyword \""+kw+"\"")
-			}
-		}
+		out = append(out, "Added tool: "+name)
 	}
-	if len(reasons) > 0 {
-		return RiskHigh, reasons
+	for _, name := range d.RemovedTools {
+		out = append(out, "Removed tool: "+name)
 	}
-
 	for _, tc := range d.ChangedTools {
-		if tc.SchemaChanged {
-			reasons = append(reasons, "tool \""+tc.Name+"\" input schema changed")
+		switch {
+		case tc.SchemaChanged:
+			out = append(out, "Schema changed: "+tc.Name)
+		case tc.DescriptionChanged:
+			out = append(out, "Description changed: "+tc.Name)
 		}
 	}
-	if len(reasons) > 0 {
-		return RiskMedium, reasons
+	for _, name := range d.AddedPrompts {
+		out = append(out, "Added prompt: "+name)
 	}
-
-	for _, tc := range d.ChangedTools {
-		if tc.DescriptionChanged {
-			reasons = append(reasons, "tool \""+tc.Name+"\" description changed")
+	for _, name := range d.RemovedPrompts {
+		out = append(out, "Removed prompt: "+name)
+	}
+	// A changed prompt is not cosmetic: prompt arguments feed straight into
+	// the model, so an argument the approver never saw is an injection
+	// vector. These two loops were missing, which rendered a manifest whose
+	// only change was a prompt or resource as an empty change list.
+	for _, pc := range d.ChangedPrompts {
+		switch {
+		case pc.ArgumentsChanged:
+			out = append(out, "Arguments changed: prompt "+pc.Name)
+		case pc.DescriptionChanged:
+			out = append(out, "Description changed: prompt "+pc.Name)
 		}
 	}
-	if len(reasons) > 0 {
-		return RiskLow, reasons
+	for _, uri := range d.AddedResources {
+		out = append(out, "Added resource: "+uri)
 	}
-
-	if len(d.AddedTools) > 0 || len(d.RemovedTools) > 0 {
-		// Added tools with no keyword match, or removed tools: still a
-		// capability change worth a human look, default to LOW.
-		return RiskLow, []string{"tool set changed"}
+	for _, uri := range d.RemovedResources {
+		out = append(out, "Removed resource: "+uri)
 	}
-
-	return RiskLow, []string{"no tool-level change"}
+	for _, rc := range d.ChangedResources {
+		switch {
+		case rc.MimeTypeChanged:
+			out = append(out, "MIME type changed: resource "+rc.URI)
+		case rc.DescriptionChanged:
+			out = append(out, "Description changed: resource "+rc.URI)
+		}
+	}
+	return out
 }
 
 // --- internal comparison plumbing -----------------------------------------

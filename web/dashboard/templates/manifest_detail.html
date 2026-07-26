@@ -14,7 +14,6 @@
   <h1>Manifest #{{.Manifest.ID}} — {{.Manifest.Server}}</h1>
   <dl class="meta">
     <dt>State</dt><dd><span class="badge state-{{.Manifest.State}}">{{.Manifest.State}}</span></dd>
-    <dt>Risk</dt><dd><span class="badge risk-{{.Manifest.Risk}}">{{.Manifest.Risk}}</span></dd>
     <dt>Hash</dt><dd class="hash">{{.Manifest.Hash}}</dd>
     <dt>Seen</dt><dd>{{.Manifest.CreatedAt.Format "2006-01-02 15:04:05"}}</dd>
   </dl>
@@ -40,8 +39,10 @@
     <div><h3>Changed tools</h3><ul>{{range .Diff.ChangedTools}}<li>{{.}}</li>{{else}}<li class="none">none</li>{{end}}</ul></div>
     <div><h3>Added prompts</h3><ul>{{range .Diff.AddedPrompts}}<li>{{.}}</li>{{else}}<li class="none">none</li>{{end}}</ul></div>
     <div><h3>Removed prompts</h3><ul>{{range .Diff.RemovedPrompts}}<li>{{.}}</li>{{else}}<li class="none">none</li>{{end}}</ul></div>
+    <div><h3>Changed prompts</h3><ul>{{range .Diff.ChangedPrompts}}<li>{{.}}</li>{{else}}<li class="none">none</li>{{end}}</ul></div>
     <div><h3>Added resources</h3><ul>{{range .Diff.AddedResources}}<li>{{.}}</li>{{else}}<li class="none">none</li>{{end}}</ul></div>
     <div><h3>Removed resources</h3><ul>{{range .Diff.RemovedResources}}<li>{{.}}</li>{{else}}<li class="none">none</li>{{end}}</ul></div>
+    <div><h3>Changed resources</h3><ul>{{range .Diff.ChangedResources}}<li>{{.}}</li>{{else}}<li class="none">none</li>{{end}}</ul></div>
   </div>
   {{end}}
 

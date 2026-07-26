@@ -1,0 +1,50 @@
+mcp-shield has been installed as {{ .Release.Name }} in namespace {{ .Release.Namespace }}.
+
+Client-facing proxy (:8080) -- point your MCP-capable client at:
+
+  http://{{ include "mcp-shield.fullname" . }}-proxy.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.proxy.service.port }}/mcp/<server-name>
+
+Approval API + dashboard (:8081) -- this has NO AUTHENTICATION. It is not
+exposed outside the cluster by default (dashboard.ingress.enabled: false,
+dashboard.networkPolicy.enabled: true with an empty allow-list). Reach it
+from your workstation with:
+
+  kubectl --namespace {{ .Release.Namespace }} port-forward \
+    svc/{{ include "mcp-shield.fullname" . }}-dashboard {{ .Values.dashboard.service.port }}:{{ .Values.dashboard.service.port }}
+
+then open http://localhost:{{ .Values.dashboard.service.port }}/ for the dashboard, or:
+
+  curl localhost:{{ .Values.dashboard.service.port }}/api/manifests/pending
+
+{{- if not .Values.persistence.enabled }}
+
+WARNING: persistence.enabled is false. The approvals audit trail lives
+only in this pod and is lost on every restart or reschedule -- every
+upstream server will need to be re-approved from scratch. Set
+persistence.enabled: true for anything but a throwaway demo.
+{{- end }}
+
+{{- if eq .Values.env.failMode "warn" }}
+
+WARNING: FAIL_MODE is "warn". Every capability change is let through
+regardless of approval state -- this is for observing what the gate
+*would* block during a rollout, never a production posture. See
+docs/security-model.md.
+{{- end }}
+
+{{- if .Values.dashboard.ingress.enabled }}
+
+WARNING: dashboard.ingress.enabled is true. The unauthenticated approval
+API/dashboard is reachable at whatever host(s) you configured under
+dashboard.ingress.hosts. Anyone who can reach that host can approve or
+reject pending capability changes. Make sure your ingress controller
+layers its own authentication (oauth2-proxy, basic auth annotation, mTLS,
+or equivalent) in front of it -- this chart does not add one for you.
+{{- end }}
+
+{{- if .Values.dashboard.networkPolicy.allowFrom }}
+
+NOTE: dashboard.networkPolicy.allowFrom is non-empty, so pods matching
+that selector can reach :8081 directly over the pod network (not just via
+port-forward). Confirm that list is what you intend.
+{{- end }}

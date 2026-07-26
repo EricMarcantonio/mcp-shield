@@ -1,5 +1,14 @@
 services:
   gateway:
+    # With both `image` and `build` set, `docker compose up`/`make docker-up`
+    # builds from the local Dockerfile whenever the named image isn't
+    # already present locally, and reuses it otherwise; `--build` (or
+    # `make docker-build`) forces a rebuild. NOTE: no `v*` tag has been
+    # pushed yet, and the repo + ghcr package are private, so the
+    # ghcr.io/ericmarcantonio/mcp-shield:latest image itself does not exist
+    # anywhere to pull — until the first tagged release ships and the
+    # package is made public, the local build is the only path that works.
+    image: ghcr.io/ericmarcantonio/mcp-shield:latest
     build: .
     ports:
       - "8080:8080"

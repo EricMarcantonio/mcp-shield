@@ -35,6 +35,11 @@ type canonicalResource struct {
 // FromCanonicalJSON reconstructs a Manifest from bytes previously produced
 // by Canonicalize (as stored in manifests.canonical_json). Used to rebuild
 // the approved baseline manifest for diffing against a newly observed one.
+//
+// It enforces the same unique-identity invariant as Build. Build cannot
+// write duplicates to the database, so a stored manifest that has them was
+// corrupted or tampered with after the fact — a baseline that no longer
+// means what was approved must not be diffed against.
 func FromCanonicalJSON(b []byte) (*Manifest, error) {
 	var doc canonicalDoc
 	if err := json.Unmarshal(b, &doc); err != nil {
@@ -54,6 +59,9 @@ func FromCanonicalJSON(b []byte) (*Manifest, error) {
 	}
 	for i, r := range doc.Resources {
 		m.Resources[i] = mcp.Resource{URI: r.URI, Name: r.Name, Description: r.Description, MimeType: r.MimeType}
+	}
+	if err := validateUniqueIdentities(m); err != nil {
+		return nil, err
 	}
 	return m, nil
 }

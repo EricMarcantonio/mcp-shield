@@ -1,0 +1,30 @@
+apiVersion: v2
+name: mcp-shield
+description: >-
+  A Zero Trust gateway for the Model Context Protocol. Fingerprints,
+  diffs, and gates every capability an upstream MCP server advertises
+  behind a human approval step.
+type: application
+
+# version and appVersion are bumped together by the release workflow
+# (.github/workflows/release.yml) from the same `vX.Y.Z` git tag that
+# triggers a GoReleaser build, so the chart version and the app version
+# it deploys never drift apart. Do not hand-edit either field: the
+# placeholder below is overwritten by `helm package --version X.Y.Z
+# --app-version X.Y.Z` at release time. Local `helm lint`/`helm template`
+# runs against this placeholder are expected and fine.
+version: 0.0.0-placeholder
+appVersion: "0.0.0-placeholder"
+
+home: https://github.com/EricMarcantonio/mcp-shield
+sources:
+  - https://github.com/EricMarcantonio/mcp-shield
+icon: https://raw.githubusercontent.com/EricMarcantonio/mcp-shield/main/assets/logo.svg
+keywords:
+  - mcp
+  - model-context-protocol
+  - zero-trust
+  - security-gateway
+maintainers:
+  - name: EricMarcantonio
+    url: https://github.com/EricMarcantonio

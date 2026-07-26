@@ -33,7 +33,6 @@ type ManifestRecord struct {
 	Hash          string
 	CanonicalJSON string
 	State         string
-	RiskLevel     string // "" if not set
 	DiffJSON      string // "" if no prior baseline existed
 	CreatedAt     time.Time
 }

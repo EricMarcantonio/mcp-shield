@@ -32,6 +32,12 @@ type StdioTransport struct {
 	stdin  io.WriteCloser
 	frames chan []byte
 	errs   chan error
+
+	// done is closed by Close to release readLoop if it is parked on a send
+	// to a full frames channel. closeOnce keeps a second Close from panicking
+	// on a double close.
+	done      chan struct{}
+	closeOnce sync.Once
 }
 
 func NewStdioTransport(cmdPath string, args, env []string) *StdioTransport {
@@ -46,7 +52,7 @@ func (t *StdioTransport) Start(ctx context.Context) error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
-	cmd := exec.CommandContext(ctx, t.cmdPath, t.args...)
+	cmd := exec.CommandContext(ctx, t.cmdPath, t.args...) //nolint:gosec // G204: launching the operator-configured upstream MCP server is this transport's purpose
 	if len(t.env) > 0 {
 		cmd.Env = append(cmd.Environ(), t.env...)
 	}
@@ -69,6 +75,7 @@ func (t *StdioTransport) Start(ctx context.Context) error {
 	t.stdin = stdin
 	t.frames = make(chan []byte, 16)
 	t.errs = make(chan error, 1)
+	t.done = make(chan struct{})
 
 	go t.readLoop(stdout)
 
@@ -88,13 +95,32 @@ func (t *StdioTransport) readLoop(stdout io.ReadCloser) {
 		}
 		frame := make([]byte, len(line))
 		copy(frame, line)
-		t.frames <- frame
+		// A bare send here wedged the goroutine forever once nothing was
+		// draining frames (cap 16) — which is exactly the state the client
+		// leaves behind after dispatchLoop terminates — leaking a goroutine
+		// and a pipe per dead upstream. The deferred channel closes below
+		// still run when this returns via done.
+		select {
+		case t.frames <- frame:
+		case <-t.done:
+			return
+		}
 	}
 	if err := scanner.Err(); err != nil {
-		t.errs <- fmt.Errorf("stdio transport: read: %w", err)
+		t.sendTerminal(fmt.Errorf("stdio transport: read: %w", err))
 		return
 	}
-	t.errs <- io.EOF
+	t.sendTerminal(io.EOF)
+}
+
+// sendTerminal reports the reason the read loop ended, giving up if Close
+// already happened — errs has capacity 1 and nothing is guaranteed to be
+// listening, so an unconditional send is another way to wedge here.
+func (t *StdioTransport) sendTerminal(err error) {
+	select {
+	case t.errs <- err:
+	case <-t.done:
+	}
 }
 
 func (t *StdioTransport) Send(msg []byte) error {
@@ -117,6 +143,11 @@ func (t *StdioTransport) Recv() (<-chan []byte, <-chan error) {
 func (t *StdioTransport) Close() error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	t.closeOnce.Do(func() {
+		if t.done != nil {
+			close(t.done)
+		}
+	})
 	if t.stdin != nil {
 		_ = t.stdin.Close()
 	}

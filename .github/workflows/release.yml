@@ -24,6 +24,8 @@ on:
 permissions:
   contents: write # create the GitHub Release and upload archives/checksums
   packages: write # push images/manifests to ghcr.io
+  id-token: write # OIDC token used to sign build provenance
+  attestations: write # record SLSA provenance attestations
 
 jobs:
   goreleaser:
@@ -63,3 +65,15 @@ jobs:
             echo "Checking ghcr.io/ericmarcantonio/mcp-shield:$tag"
             docker buildx imagetools inspect "ghcr.io/ericmarcantonio/mcp-shield:$tag"
           done
+
+      # SLSA build provenance. A gateway that exists to tell you an artifact
+      # changed should be able to prove where its own artifacts came from.
+      # These attestations are verifiable with:
+      #   gh attestation verify <file-or-oci-ref> --repo EricMarcantonio/mcp-shield
+      - name: Attest release binaries
+        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
+        with:
+          subject-path: |
+            dist/*.tar.gz
+            dist/*.zip
+            dist/checksums.txt

@@ -513,7 +513,7 @@ func TestEnqueuedNotificationIsImmediatelyDue(t *testing.T) {
 		t.Fatal("expected a non-zero outbox row id: it is the receiver's dedupe key")
 	}
 
-	due, err := store.DueNotifications(ctx, time.Now().UTC(), 10)
+	due, err := store.DueNotifications(ctx, time.Now().UTC(), 6, 10)
 	if err != nil {
 		t.Fatalf("due: %v", err)
 	}
@@ -542,7 +542,7 @@ func TestDueNotificationsExcludesRowsScheduledInTheFuture(t *testing.T) {
 		t.Fatalf("mark failed: %v", err)
 	}
 
-	due, err := store.DueNotifications(ctx, now, 10)
+	due, err := store.DueNotifications(ctx, now, 6, 10)
 	if err != nil {
 		t.Fatalf("due: %v", err)
 	}
@@ -550,7 +550,7 @@ func TestDueNotificationsExcludesRowsScheduledInTheFuture(t *testing.T) {
 		t.Fatalf("a row rescheduled an hour out must not be due now, got %+v", due)
 	}
 
-	later, err := store.DueNotifications(ctx, now.Add(2*time.Hour), 10)
+	later, err := store.DueNotifications(ctx, now.Add(2*time.Hour), 6, 10)
 	if err != nil {
 		t.Fatalf("due later: %v", err)
 	}
@@ -573,7 +573,7 @@ func TestMarkNotificationDeliveredRemovesItFromTheDueSet(t *testing.T) {
 		t.Fatalf("mark delivered: %v", err)
 	}
 
-	due, err := store.DueNotifications(ctx, now.Add(24*time.Hour), 10)
+	due, err := store.DueNotifications(ctx, now.Add(24*time.Hour), 6, 10)
 	if err != nil {
 		t.Fatalf("due: %v", err)
 	}
@@ -662,7 +662,7 @@ func TestEnqueueNotificationRollsBackWithItsTransaction(t *testing.T) {
 		t.Fatalf("expected sentinel error, got %v", err)
 	}
 
-	due, err := store.DueNotifications(ctx, time.Now().UTC(), 10)
+	due, err := store.DueNotifications(ctx, time.Now().UTC(), 6, 10)
 	if err != nil {
 		t.Fatalf("due: %v", err)
 	}
@@ -687,7 +687,7 @@ func TestDueNotificationsOrdersByIDAndHonoursLimit(t *testing.T) {
 		ids = append(ids, id)
 	}
 
-	due, err := store.DueNotifications(ctx, time.Now().UTC(), 2)
+	due, err := store.DueNotifications(ctx, time.Now().UTC(), 6, 2)
 	if err != nil {
 		t.Fatalf("due: %v", err)
 	}

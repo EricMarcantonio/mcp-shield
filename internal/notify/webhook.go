@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -180,13 +181,22 @@ func VerifySignature(secret, timestamp string, body []byte, signatureHeader stri
 	return nil
 }
 
-// redactURL strips the target URL out of an error produced by net/http,
-// whose messages embed the full URL by construction.
-func redactURL(err error, url string) error {
-	if url == "" {
+// redactURL strips the target's location out of an error produced by
+// net/http, whose messages embed it by construction.
+//
+// Two substitutions, not one. A non-2xx response embeds the whole URL, but a
+// dial failure reports host:port separately ("dial tcp 10.0.0.5:443:
+// connection refused") and would survive redaction of the full URL alone —
+// that is what a live run against a dead receiver actually produced. The
+// target's configured name is the only identifier an error needs.
+func redactURL(err error, rawURL string) error {
+	if rawURL == "" {
 		return err
 	}
-	redacted := strings.ReplaceAll(err.Error(), url, "<redacted-url>")
+	redacted := strings.ReplaceAll(err.Error(), rawURL, "<redacted-url>")
+	if parsed, parseErr := url.Parse(rawURL); parseErr == nil && parsed.Host != "" {
+		redacted = strings.ReplaceAll(redacted, parsed.Host, "<redacted-host>")
+	}
 	return errors.New(redacted)
 }
 

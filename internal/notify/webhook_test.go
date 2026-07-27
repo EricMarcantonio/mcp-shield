@@ -167,6 +167,12 @@ func TestWebhookTransportErrorNeverLeaksTheURL(t *testing.T) {
 		t.Fatalf("error should name the target: %v", err)
 	}
 	assertNoSecretIn(t, err.Error(), deadURL)
+
+	// A dial failure names host:port in a separate substring from the full
+	// URL, so redacting the URL alone is not enough. The target's name is
+	// what identifies it; nothing about where it lives needs to escape.
+	host := strings.TrimPrefix(srv.URL, "http://")
+	assertNoSecretIn(t, err.Error(), host)
 }
 
 // TestWebhookHardCapsItsTimeout is the isolation property at the target

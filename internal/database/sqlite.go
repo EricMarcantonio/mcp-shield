@@ -50,6 +50,18 @@ CREATE TABLE IF NOT EXISTS approvals (
   created_at DATETIME NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_approvals_manifest ON approvals(manifest_id);
+
+CREATE TABLE IF NOT EXISTS notification_outbox (
+  id INTEGER PRIMARY KEY,
+  event_type TEXT NOT NULL,
+  manifest_id INTEGER NOT NULL REFERENCES manifests(id),
+  attempts INTEGER NOT NULL DEFAULT 0,
+  next_attempt_at DATETIME NOT NULL,
+  delivered_at DATETIME,
+  last_error TEXT,
+  created_at DATETIME NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_outbox_due ON notification_outbox(delivered_at, next_attempt_at);
 `
 
 // Store is the persistence interface used by the approval workflow and API
@@ -73,6 +85,17 @@ type Store interface {
 
 	InsertApproval(ctx context.Context, a *Approval) (int64, error)
 	ListApprovalsForManifest(ctx context.Context, manifestID int64) ([]Approval, error)
+
+	// Notification outbox. EnqueueNotification is deliberately a plain
+	// INSERT with no network or filesystem work of its own, so it can be
+	// called inside the transaction that records a manifest without
+	// lengthening it measurably. Nothing else in this interface may be
+	// added to that transaction.
+	EnqueueNotification(ctx context.Context, eventType string, manifestID int64) (int64, error)
+	DueNotifications(ctx context.Context, now time.Time, limit int) ([]OutboxRow, error)
+	MarkNotificationDelivered(ctx context.Context, id int64, now time.Time) error
+	MarkNotificationFailed(ctx context.Context, id int64, nextAttempt time.Time, lastError string) error
+	ListUndeliveredNotifications(ctx context.Context, minAttempts int) ([]OutboxRow, error)
 
 	WithTx(ctx context.Context, fn func(Store) error) error
 }
@@ -230,6 +253,26 @@ func (q queries) ListApprovalsForManifest(ctx context.Context, manifestID int64)
 	return listApprovalsForManifest(ctx, q.e, manifestID)
 }
 
+func (q queries) EnqueueNotification(ctx context.Context, eventType string, manifestID int64) (int64, error) {
+	return enqueueNotification(ctx, q.e, eventType, manifestID)
+}
+
+func (q queries) DueNotifications(ctx context.Context, now time.Time, limit int) ([]OutboxRow, error) {
+	return dueNotifications(ctx, q.e, now, limit)
+}
+
+func (q queries) MarkNotificationDelivered(ctx context.Context, id int64, now time.Time) error {
+	return markNotificationDelivered(ctx, q.e, id, now)
+}
+
+func (q queries) MarkNotificationFailed(ctx context.Context, id int64, nextAttempt time.Time, lastError string) error {
+	return markNotificationFailed(ctx, q.e, id, nextAttempt, lastError)
+}
+
+func (q queries) ListUndeliveredNotifications(ctx context.Context, minAttempts int) ([]OutboxRow, error) {
+	return listUndeliveredNotifications(ctx, q.e, minAttempts)
+}
+
 func (s *SQLiteStore) WithTx(ctx context.Context, fn func(Store) error) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -371,18 +414,8 @@ func listPendingManifests(ctx context.Context, e execer) ([]ManifestRecord, erro
 }
 
 func updateManifestState(ctx context.Context, e execer, id int64, newState string) error {
-	res, err := e.ExecContext(ctx, `UPDATE manifests SET state = ? WHERE id = ?`, newState, id)
-	if err != nil {
-		return fmt.Errorf("database: update manifest state: %w", err)
-	}
-	n, err := res.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("database: update manifest state: rows affected: %w", err)
-	}
-	if n == 0 {
-		return ErrNotFound
-	}
-	return nil
+	return execExpectingOneRow(ctx, e, "update manifest state",
+		`UPDATE manifests SET state = ? WHERE id = ?`, newState, id)
 }
 
 func insertApproval(ctx context.Context, e execer, a *Approval) (int64, error) {
@@ -416,6 +449,112 @@ func listApprovalsForManifest(ctx context.Context, e execer, manifestID int64) (
 			return nil, fmt.Errorf("database: list approvals: scan: %w", err)
 		}
 		out = append(out, a)
+	}
+	return out, rows.Err()
+}
+
+// --- notification outbox ---------------------------------------------------
+
+// enqueueNotification queues an event for delivery, due immediately. It is
+// one INSERT with no I/O beyond the statement itself: callers run it inside
+// the transaction that writes the manifest, so the event and the manifest
+// row commit or roll back together.
+func enqueueNotification(ctx context.Context, e execer, eventType string, manifestID int64) (int64, error) {
+	now := time.Now().UTC()
+	res, err := e.ExecContext(ctx, `
+		INSERT INTO notification_outbox (event_type, manifest_id, attempts, next_attempt_at, created_at)
+		VALUES (?, ?, 0, ?, ?)`, eventType, manifestID, now, now)
+	if err != nil {
+		return 0, fmt.Errorf("database: enqueue notification: %w", err)
+	}
+	id, err := res.LastInsertId()
+	if err != nil {
+		return 0, fmt.Errorf("database: enqueue notification: last insert id: %w", err)
+	}
+	return id, nil
+}
+
+// dueNotifications returns undelivered rows whose backoff has elapsed, in id
+// order. Ascending id is the ordering promise: events for one server are
+// delivered in the order the gate recorded them.
+func dueNotifications(ctx context.Context, e execer, now time.Time, limit int) ([]OutboxRow, error) {
+	rows, err := e.QueryContext(ctx, `
+		SELECT id, event_type, manifest_id, attempts, next_attempt_at, delivered_at, last_error, created_at
+		FROM notification_outbox
+		WHERE delivered_at IS NULL AND next_attempt_at <= ?
+		ORDER BY id LIMIT ?`, now.UTC(), limit)
+	if err != nil {
+		return nil, fmt.Errorf("database: due notifications: %w", err)
+	}
+	return scanOutboxRows(rows)
+}
+
+// listUndeliveredNotifications returns rows that have failed at least
+// minAttempts times and still have not landed. This is the "permanently
+// failed" view: a target that dies quietly is the exact failure the
+// notification feature exists to remove, so those rows stay queryable
+// instead of being deleted or hidden.
+func listUndeliveredNotifications(ctx context.Context, e execer, minAttempts int) ([]OutboxRow, error) {
+	rows, err := e.QueryContext(ctx, `
+		SELECT id, event_type, manifest_id, attempts, next_attempt_at, delivered_at, last_error, created_at
+		FROM notification_outbox
+		WHERE delivered_at IS NULL AND attempts >= ?
+		ORDER BY id`, minAttempts)
+	if err != nil {
+		return nil, fmt.Errorf("database: list undelivered notifications: %w", err)
+	}
+	return scanOutboxRows(rows)
+}
+
+func markNotificationDelivered(ctx context.Context, e execer, id int64, now time.Time) error {
+	return execExpectingOneRow(ctx, e, "mark notification delivered",
+		`UPDATE notification_outbox SET delivered_at = ? WHERE id = ?`, now.UTC(), id)
+}
+
+// markNotificationFailed records the attempt and reschedules. The error text
+// is stored so an operator can see why a target is failing; callers are
+// responsible for handing it text that names the target rather than its URL.
+func markNotificationFailed(ctx context.Context, e execer, id int64, nextAttempt time.Time, lastError string) error {
+	return execExpectingOneRow(ctx, e, "mark notification failed",
+		`UPDATE notification_outbox SET attempts = attempts + 1, next_attempt_at = ?, last_error = ? WHERE id = ?`,
+		nextAttempt.UTC(), lastError, id)
+}
+
+// execExpectingOneRow runs an UPDATE that must touch exactly one existing
+// row and maps "touched nothing" to ErrNotFound, so an update against a
+// vanished id fails loudly instead of succeeding silently.
+func execExpectingOneRow(ctx context.Context, e execer, what, query string, args ...any) error {
+	res, err := e.ExecContext(ctx, query, args...)
+	if err != nil {
+		return fmt.Errorf("database: %s: %w", what, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("database: %s: rows affected: %w", what, err)
+	}
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func scanOutboxRows(rows *sql.Rows) ([]OutboxRow, error) {
+	defer func() { _ = rows.Close() }()
+	var out []OutboxRow
+	for rows.Next() {
+		var r OutboxRow
+		var deliveredAt sql.NullTime
+		var lastError sql.NullString
+		if err := rows.Scan(&r.ID, &r.EventType, &r.ManifestID, &r.Attempts,
+			&r.NextAttemptAt, &deliveredAt, &lastError, &r.CreatedAt); err != nil {
+			return nil, fmt.Errorf("database: scan outbox row: %w", err)
+		}
+		if deliveredAt.Valid {
+			t := deliveredAt.Time
+			r.DeliveredAt = &t
+		}
+		r.LastError = lastError.String
+		out = append(out, r)
 	}
 	return out, rows.Err()
 }

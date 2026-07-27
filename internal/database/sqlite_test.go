@@ -2,11 +2,13 @@ package database
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func openTestStore(t *testing.T) *SQLiteStore {
@@ -419,3 +421,280 @@ func TestWithTxRollsBackOnError(t *testing.T) {
 type txSentinelErr struct{}
 
 func (e *txSentinelErr) Error() string { return "sentinel" }
+
+// --- notification outbox ----------------------------------------------------
+
+// TestOpenUpgradesAV010DatabaseInPlace covers the one thing v0.1.0 shipping
+// changed about this package: user databases are no longer disposable. A
+// database created by 0.1.0 has no notification_outbox table, and there is
+// no migration framework — only the idempotent schema applied on Open. This
+// asserts both halves of "additive and safe": the new table appears, and
+// every pre-existing row is still there afterwards.
+func TestOpenUpgradesAV010DatabaseInPlace(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "v010.db")
+
+	legacy, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatalf("open legacy db: %v", err)
+	}
+	// Verbatim v0.1.0 schema: servers, manifests, approvals. No outbox.
+	const v010Schema = `
+CREATE TABLE servers (id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE, endpoint TEXT, created_at DATETIME NOT NULL);
+CREATE TABLE manifests (id INTEGER PRIMARY KEY, server_id INTEGER NOT NULL REFERENCES servers(id), hash TEXT NOT NULL,
+  canonical_json TEXT NOT NULL, state TEXT NOT NULL, diff_json TEXT, created_at DATETIME NOT NULL);
+CREATE UNIQUE INDEX idx_manifests_server_hash ON manifests(server_id, hash);
+CREATE TABLE approvals (id INTEGER PRIMARY KEY, manifest_id INTEGER NOT NULL REFERENCES manifests(id),
+  decision TEXT NOT NULL, username TEXT NOT NULL, reason TEXT, created_at DATETIME NOT NULL);
+INSERT INTO servers (id, name, endpoint, created_at) VALUES (1, 'calendar', '', '2026-01-01 00:00:00+00:00');
+INSERT INTO manifests (id, server_id, hash, canonical_json, state, diff_json, created_at)
+  VALUES (1, 1, 'abc', '{}', 'APPROVED', NULL, '2026-01-01 00:00:00+00:00');
+INSERT INTO approvals (id, manifest_id, decision, username, reason, created_at)
+  VALUES (1, 1, 'APPROVED', 'eric', 'baseline', '2026-01-01 00:00:00+00:00');
+`
+	if _, err := legacy.ExecContext(ctx, v010Schema); err != nil {
+		t.Fatalf("build legacy db: %v", err)
+	}
+	if err := legacy.Close(); err != nil {
+		t.Fatalf("close legacy db: %v", err)
+	}
+
+	store, err := Open(path)
+	if err != nil {
+		t.Fatalf("opening a v0.1.0 database must succeed: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	srv, err := store.GetServerByName(ctx, "calendar")
+	if err != nil {
+		t.Fatalf("pre-existing server row must survive the upgrade: %v", err)
+	}
+	rec, err := store.GetApprovedManifest(ctx, srv.ID)
+	if err != nil {
+		t.Fatalf("pre-existing approved manifest must survive the upgrade: %v", err)
+	}
+	if rec.Hash != "abc" {
+		t.Fatalf("approved baseline changed across the upgrade: %+v", rec)
+	}
+	history, err := store.ListApprovalsForManifest(ctx, rec.ID)
+	if err != nil || len(history) != 1 {
+		t.Fatalf("pre-existing audit trail must survive the upgrade: %v, %+v", err, history)
+	}
+
+	if _, err := store.EnqueueNotification(ctx, EventManifestPending, rec.ID); err != nil {
+		t.Fatalf("the outbox table must be created on an existing database: %v", err)
+	}
+}
+
+func insertTestManifest(t *testing.T, store Store) int64 {
+	t.Helper()
+	ctx := context.Background()
+	srv, err := store.CreateServer(ctx, "outbox-srv", "")
+	if err != nil {
+		t.Fatalf("create server: %v", err)
+	}
+	id, err := store.InsertManifest(ctx, &ManifestRecord{ServerID: srv.ID, Hash: "h", CanonicalJSON: "{}", State: StatePending})
+	if err != nil {
+		t.Fatalf("insert manifest: %v", err)
+	}
+	return id
+}
+
+func TestEnqueuedNotificationIsImmediatelyDue(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	manifestID := insertTestManifest(t, store)
+
+	id, err := store.EnqueueNotification(ctx, EventManifestPending, manifestID)
+	if err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+	if id == 0 {
+		t.Fatal("expected a non-zero outbox row id: it is the receiver's dedupe key")
+	}
+
+	due, err := store.DueNotifications(ctx, time.Now().UTC(), 10)
+	if err != nil {
+		t.Fatalf("due: %v", err)
+	}
+	if len(due) != 1 {
+		t.Fatalf("expected the new row to be due now, got %d rows", len(due))
+	}
+	if due[0].ID != id || due[0].EventType != EventManifestPending || due[0].ManifestID != manifestID {
+		t.Fatalf("unexpected row: %+v", due[0])
+	}
+	if due[0].Attempts != 0 || due[0].DeliveredAt != nil {
+		t.Fatalf("a fresh row must be undelivered with zero attempts, got %+v", due[0])
+	}
+}
+
+func TestDueNotificationsExcludesRowsScheduledInTheFuture(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	manifestID := insertTestManifest(t, store)
+
+	id, err := store.EnqueueNotification(ctx, EventManifestPending, manifestID)
+	if err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+	now := time.Now().UTC()
+	if err := store.MarkNotificationFailed(ctx, id, now.Add(time.Hour), "boom"); err != nil {
+		t.Fatalf("mark failed: %v", err)
+	}
+
+	due, err := store.DueNotifications(ctx, now, 10)
+	if err != nil {
+		t.Fatalf("due: %v", err)
+	}
+	if len(due) != 0 {
+		t.Fatalf("a row rescheduled an hour out must not be due now, got %+v", due)
+	}
+
+	later, err := store.DueNotifications(ctx, now.Add(2*time.Hour), 10)
+	if err != nil {
+		t.Fatalf("due later: %v", err)
+	}
+	if len(later) != 1 {
+		t.Fatalf("expected the row to be due once its backoff elapsed, got %d rows", len(later))
+	}
+	if later[0].Attempts != 1 || later[0].LastError != "boom" {
+		t.Fatalf("MarkNotificationFailed must record attempts and the error, got %+v", later[0])
+	}
+}
+
+func TestMarkNotificationDeliveredRemovesItFromTheDueSet(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	manifestID := insertTestManifest(t, store)
+	id, _ := store.EnqueueNotification(ctx, EventManifestPending, manifestID)
+
+	now := time.Now().UTC()
+	if err := store.MarkNotificationDelivered(ctx, id, now); err != nil {
+		t.Fatalf("mark delivered: %v", err)
+	}
+
+	due, err := store.DueNotifications(ctx, now.Add(24*time.Hour), 10)
+	if err != nil {
+		t.Fatalf("due: %v", err)
+	}
+	if len(due) != 0 {
+		t.Fatalf("a delivered row must never be redelivered, got %+v", due)
+	}
+}
+
+func TestMarkNotificationOnMissingRowReportsNotFound(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	now := time.Now().UTC()
+
+	if err := store.MarkNotificationDelivered(ctx, 999, now); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("expected ErrNotFound marking a missing row delivered, got %v", err)
+	}
+	if err := store.MarkNotificationFailed(ctx, 999, now, "boom"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("expected ErrNotFound marking a missing row failed, got %v", err)
+	}
+}
+
+func TestListUndeliveredNotificationsFiltersByAttempts(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	manifestID := insertTestManifest(t, store)
+
+	exhausted, _ := store.EnqueueNotification(ctx, EventManifestPending, manifestID)
+	fresh, _ := store.EnqueueNotification(ctx, EventManifestApproved, manifestID)
+
+	now := time.Now().UTC()
+	for range 2 {
+		if err := store.MarkNotificationFailed(ctx, exhausted, now, "target refused"); err != nil {
+			t.Fatalf("mark failed: %v", err)
+		}
+	}
+
+	failed, err := store.ListUndeliveredNotifications(ctx, 2)
+	if err != nil {
+		t.Fatalf("list undelivered: %v", err)
+	}
+	if len(failed) != 1 || failed[0].ID != exhausted {
+		t.Fatalf("expected only the row that burned through its attempts, got %+v", failed)
+	}
+	if failed[0].Attempts != 2 {
+		t.Fatalf("expected 2 recorded attempts, got %d", failed[0].Attempts)
+	}
+
+	if err := store.MarkNotificationDelivered(ctx, fresh, now); err != nil {
+		t.Fatalf("mark delivered: %v", err)
+	}
+	for range 2 {
+		if err := store.MarkNotificationFailed(ctx, fresh, now, "late failure"); err != nil {
+			t.Fatalf("mark failed: %v", err)
+		}
+	}
+	stillOne, err := store.ListUndeliveredNotifications(ctx, 2)
+	if err != nil {
+		t.Fatalf("list undelivered: %v", err)
+	}
+	if len(stillOne) != 1 {
+		t.Fatalf("a delivered row must never appear in the failed view, got %+v", stillOne)
+	}
+}
+
+// TestEnqueueNotificationRollsBackWithItsTransaction is the property the
+// whole outbox design rests on: the event exists if and only if the manifest
+// row does. If the enqueue could survive a rolled-back manifest insert (or
+// vice versa) the gate and the approver would disagree about what happened.
+func TestEnqueueNotificationRollsBackWithItsTransaction(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	srv, _ := store.CreateServer(ctx, "a", "")
+
+	sentinel := &txSentinelErr{}
+	err := store.WithTx(ctx, func(tx Store) error {
+		id, err := tx.InsertManifest(ctx, &ManifestRecord{ServerID: srv.ID, Hash: "h", CanonicalJSON: "{}", State: StatePending})
+		if err != nil {
+			return err
+		}
+		if _, err := tx.EnqueueNotification(ctx, EventManifestPending, id); err != nil {
+			return err
+		}
+		return sentinel
+	})
+	if !errors.Is(err, sentinel) {
+		t.Fatalf("expected sentinel error, got %v", err)
+	}
+
+	due, err := store.DueNotifications(ctx, time.Now().UTC(), 10)
+	if err != nil {
+		t.Fatalf("due: %v", err)
+	}
+	if len(due) != 0 {
+		t.Fatalf("the outbox row must roll back with the manifest insert, got %+v", due)
+	}
+}
+
+// TestDueNotificationsOrdersByIDAndHonoursLimit pins the ordering promise the
+// docs make: per-server monotonic order by outbox id.
+func TestDueNotificationsOrdersByIDAndHonoursLimit(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	manifestID := insertTestManifest(t, store)
+
+	var ids []int64
+	for range 3 {
+		id, err := store.EnqueueNotification(ctx, EventManifestPending, manifestID)
+		if err != nil {
+			t.Fatalf("enqueue: %v", err)
+		}
+		ids = append(ids, id)
+	}
+
+	due, err := store.DueNotifications(ctx, time.Now().UTC(), 2)
+	if err != nil {
+		t.Fatalf("due: %v", err)
+	}
+	if len(due) != 2 {
+		t.Fatalf("expected the limit to be honoured, got %d rows", len(due))
+	}
+	if due[0].ID != ids[0] || due[1].ID != ids[1] {
+		t.Fatalf("expected ascending id order, got %d then %d", due[0].ID, due[1].ID)
+	}
+}

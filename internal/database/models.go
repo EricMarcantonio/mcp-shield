@@ -20,6 +20,15 @@ const (
 	DecisionRejected = "REJECTED"
 )
 
+// Notification event types written to the outbox. These strings are part of
+// the webhook payload's public contract (the "event" field), so they are
+// defined once here rather than spelled out at each call site.
+const (
+	EventManifestPending  = "manifest.pending"
+	EventManifestApproved = "manifest.approved"
+	EventManifestRejected = "manifest.rejected"
+)
+
 type Server struct {
 	ID        int64
 	Name      string
@@ -44,4 +53,20 @@ type Approval struct {
 	Username   string
 	Reason     string
 	CreatedAt  time.Time
+}
+
+// OutboxRow is one pending notification. It carries no payload: the event
+// body is composed from the manifest at delivery time, so a change to the
+// payload format never has to migrate rows already queued. ID doubles as the
+// receiver's idempotency key, which is what makes at-least-once delivery
+// safe to deduplicate on the far side.
+type OutboxRow struct {
+	ID            int64
+	EventType     string
+	ManifestID    int64
+	Attempts      int
+	NextAttemptAt time.Time
+	DeliveredAt   *time.Time // nil until a 2xx has been observed
+	LastError     string
+	CreatedAt     time.Time
 }

@@ -31,7 +31,7 @@ func runCLI(cmd string, args []string) error {
 	case "connect":
 		return cliConnect(args)
 	case "version":
-		fmt.Println("mcp-shield " + version)
+		fmt.Println("mcp-shield " + resolveVersion())
 		return nil
 	case "servers":
 		return cliServers()

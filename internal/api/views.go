@@ -27,6 +27,39 @@ type ManifestView struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
+// FailedNotificationView is the shape returned by
+// GET /api/notifications/failed: an event the dispatcher gave up on.
+//
+// LastError is the target's own error text, which names the target by its
+// configured name and never by its URL — a webhook URL is a
+// capability-bearing credential and this endpoint is a place operators copy
+// output from.
+type FailedNotificationView struct {
+	EventID    int64     `json:"event_id"`
+	Event      string    `json:"event"`
+	Server     string    `json:"server"`
+	ManifestID int64     `json:"manifest_id"`
+	Attempts   int       `json:"attempts"`
+	LastError  string    `json:"last_error"`
+	CreatedAt  time.Time `json:"created_at"`
+}
+
+func toFailedNotificationView(ctx context.Context, store database.Store, row database.OutboxRow) (FailedNotificationView, error) {
+	rec, err := store.GetManifestByID(ctx, row.ManifestID)
+	if err != nil {
+		return FailedNotificationView{}, err
+	}
+	name, err := serverNameFor(ctx, store, rec.ServerID)
+	if err != nil {
+		return FailedNotificationView{}, err
+	}
+	return FailedNotificationView{
+		EventID: row.ID, Event: row.EventType, Server: name,
+		ManifestID: row.ManifestID, Attempts: row.Attempts,
+		LastError: row.LastError, CreatedAt: row.CreatedAt,
+	}, nil
+}
+
 // serverNameFor resolves the server a manifest belongs to. The error is
 // propagated rather than papered over with a placeholder name: a manifest row
 // pointing at a server that does not exist is referential corruption, and

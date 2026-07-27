@@ -1,0 +1,18 @@
+{
+  "dashboard_url": "http://localhost:8081",
+  "events": ["manifest.pending"],
+  "max_attempts": 6,
+  "webhooks": [
+    {
+      "name": "ops-slack",
+      "url": "$MCP_SHIELD_SLACK_WEBHOOK",
+      "secret": "$MCP_SHIELD_WEBHOOK_SECRET",
+      "format": "slack"
+    },
+    {
+      "name": "internal-receiver",
+      "url": "http://127.0.0.1:9000/mcp-shield",
+      "secret": "$MCP_SHIELD_WEBHOOK_SECRET"
+    }
+  ]
+}

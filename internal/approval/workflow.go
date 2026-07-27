@@ -34,13 +34,34 @@ var (
 type Workflow struct {
 	store    database.Store
 	failMode FailMode
+	notify   bool
 }
 
-func New(store database.Store, failMode FailMode) *Workflow {
+// Option adjusts optional workflow behaviour. Zero options is the plain
+// gate, unchanged.
+type Option func(*Workflow)
+
+// WithNotifications makes the workflow record a notification event in the
+// same transaction as each state change it writes, so an operator can be
+// told that a capability was withheld.
+//
+// The workflow's involvement ends there. It writes a row; it never learns
+// where events go, never waits for one, and cannot fail because of one. All
+// this option can cost a gate decision is one INSERT into a transaction
+// that was already open.
+func WithNotifications() Option {
+	return func(w *Workflow) { w.notify = true }
+}
+
+func New(store database.Store, failMode FailMode, opts ...Option) *Workflow {
 	if failMode == "" {
 		failMode = FailModeBlock
 	}
-	return &Workflow{store: store, failMode: failMode}
+	w := &Workflow{store: store, failMode: failMode}
+	for _, opt := range opts {
+		opt(w)
+	}
+	return w
 }
 
 // CheckResult reports the gate's decision for one manifest snapshot. A
@@ -147,17 +168,54 @@ func (w *Workflow) findOrInsertManifest(ctx context.Context, serverID int64, has
 	if err != nil {
 		return 0, "", fmt.Errorf("approval: marshal diff: %w", err)
 	}
-	id, err := w.store.InsertManifest(ctx, &database.ManifestRecord{
+	rec := &database.ManifestRecord{
 		ServerID:      serverID,
 		Hash:          hash,
 		CanonicalJSON: string(canonical),
 		State:         database.StatePending,
 		DiffJSON:      string(diffBytes),
-	})
+	}
+	id, err := w.insertPendingManifest(ctx, rec)
 	if err != nil {
 		return 0, "", fmt.Errorf("approval: insert manifest: %w", err)
 	}
 	return id, database.StatePending, nil
+}
+
+// insertPendingManifest writes the new manifest row and, when notifications
+// are enabled, its outbox event in the same transaction.
+//
+// Atomicity in both directions is the point. A committed manifest with no
+// event means the gate withheld a capability nobody will ever be told about
+// — the silent failure notifications exist to remove. An event with no
+// manifest would announce a decision that was never recorded. So they
+// commit together or not at all, and a crash between them replays on
+// restart.
+func (w *Workflow) insertPendingManifest(ctx context.Context, rec *database.ManifestRecord) (int64, error) {
+	if !w.notify {
+		return w.store.InsertManifest(ctx, rec)
+	}
+	var id int64
+	err := w.store.WithTx(ctx, func(tx database.Store) error {
+		var err error
+		if id, err = tx.InsertManifest(ctx, rec); err != nil {
+			return err
+		}
+		_, err = tx.EnqueueNotification(ctx, database.EventManifestPending, id)
+		return err
+	})
+	return id, err
+}
+
+// enqueue records a decision event on the transaction that is already
+// recording the decision itself. Enabled-check included so callers read as
+// one line rather than an if around every call.
+func (w *Workflow) enqueue(ctx context.Context, tx database.Store, eventType string, manifestID int64) error {
+	if !w.notify {
+		return nil
+	}
+	_, err := tx.EnqueueNotification(ctx, eventType, manifestID)
+	return err
 }
 
 // allowAll builds a result marking every advertised capability safe. Used by
@@ -273,13 +331,15 @@ func (w *Workflow) Approve(ctx context.Context, manifestID int64, username, reas
 		if err := tx.UpdateManifestState(ctx, manifestID, database.StateApproved); err != nil {
 			return err
 		}
-		_, err = tx.InsertApproval(ctx, &database.Approval{
+		if _, err := tx.InsertApproval(ctx, &database.Approval{
 			ManifestID: manifestID,
 			Decision:   database.DecisionApproved,
 			Username:   username,
 			Reason:     reason,
-		})
-		return err
+		}); err != nil {
+			return err
+		}
+		return w.enqueue(ctx, tx, database.EventManifestApproved, manifestID)
 	})
 }
 
@@ -299,13 +359,15 @@ func (w *Workflow) Reject(ctx context.Context, manifestID int64, username, reaso
 		if err := tx.UpdateManifestState(ctx, manifestID, database.StateRejected); err != nil {
 			return err
 		}
-		_, err = tx.InsertApproval(ctx, &database.Approval{
+		if _, err := tx.InsertApproval(ctx, &database.Approval{
 			ManifestID: manifestID,
 			Decision:   database.DecisionRejected,
 			Username:   username,
 			Reason:     reason,
-		})
-		return err
+		}); err != nil {
+			return err
+		}
+		return w.enqueue(ctx, tx, database.EventManifestRejected, manifestID)
 	})
 }
 

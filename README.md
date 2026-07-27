@@ -156,7 +156,22 @@ guarantees behind manifest immutability and fail-closed behavior — are in
 | `API_ADDR` | `:8081` | Approval API + dashboard listener |
 | `FAIL_MODE` | `block` | `block` (fail closed) or `warn` (observe only, never for production) |
 | `TEMPLATES_DIR` | `web/dashboard/templates` | Dashboard templates |
+| `NOTIFY_CONFIG_PATH` | `config/notify.json` | Webhook notification config; missing file disables notifications |
 | `MCP_SHIELD_API` | `http://localhost:8081` | Target API for the `mcp-shield` CLI |
+
+## Notifications
+
+The gate fails closed, so a withheld capability is invisible until someone
+looks at the dashboard. Configure webhook targets in `config/notify.json`
+(copy `config/notify.example.json`) and mcp-shield POSTs an HMAC-signed JSON
+event whenever it records a new pending manifest. Slack and Discord work via
+`"format": "slack"`. Delivery is at-least-once with persisted backoff, and
+events that were never delivered stay visible at
+`GET /api/notifications/failed`. Nothing on this path can block or delay a
+gate decision.
+
+See [docs/notifications.md](docs/notifications.md) for the payload schema,
+the signature-verification snippets, and the retry schedule.
 
 ## CLI
 

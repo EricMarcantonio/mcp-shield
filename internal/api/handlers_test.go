@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/EricMarcantonio/mcp-shield/internal/approval"
 	"github.com/EricMarcantonio/mcp-shield/internal/database"
@@ -328,4 +329,67 @@ func TestGetManifestDiffEndpoint(t *testing.T) {
 func itoa(v int64) string {
 	b, _ := json.Marshal(v)
 	return string(b)
+}
+
+// --- failed notifications ---------------------------------------------------
+
+// TestFailedNotificationsIs404WhenNotificationsAreDisabled: an operator who
+// configured no targets gets an honest "this surface does not exist", not an
+// empty list that reads as "everything delivered fine".
+func TestFailedNotificationsIs404WhenNotificationsAreDisabled(t *testing.T) {
+	s, _, _, _ := newTestServer(t)
+
+	rr := httptest.NewRecorder()
+	s.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/api/notifications/failed", nil))
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 when notifications are disabled, got %d: %s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestFailedNotificationsListsGivenUpEvents(t *testing.T) {
+	ctx := context.Background()
+	store, err := database.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	srv, _ := store.CreateServer(ctx, "calendar", "")
+	manifestID, err := store.InsertManifest(ctx, &database.ManifestRecord{
+		ServerID: srv.ID, Hash: "deadbeef", CanonicalJSON: "{}", State: database.StatePending,
+	})
+	if err != nil {
+		t.Fatalf("insert manifest: %v", err)
+	}
+
+	exhausted, _ := store.EnqueueNotification(ctx, database.EventManifestPending, manifestID)
+	stillRetrying, _ := store.EnqueueNotification(ctx, database.EventManifestPending, manifestID)
+	if err := store.MarkNotificationFailed(ctx, exhausted, time.Now().UTC(), `webhook "ops-slack": received HTTP 500`); err != nil {
+		t.Fatalf("mark failed: %v", err)
+	}
+
+	wf := approval.New(store, approval.FailModeBlock)
+	s := NewServer(store, wf, filepath.Join(t.TempDir(), "no-such-templates"), WithFailedNotifications(1))
+
+	rr := httptest.NewRecorder()
+	s.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/api/notifications/failed", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	var got []FailedNotificationView
+	if err := json.NewDecoder(rr.Body).Decode(&got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("expected only the exhausted event, got %+v", got)
+	}
+	if got[0].EventID != exhausted || got[0].EventID == stillRetrying {
+		t.Fatalf("wrong row returned: %+v", got[0])
+	}
+	if got[0].Server != "calendar" || got[0].Event != database.EventManifestPending {
+		t.Fatalf("the view must say which server and event failed: %+v", got[0])
+	}
+	if got[0].Attempts != 1 || got[0].LastError == "" {
+		t.Fatalf("the view must say how often it failed and why: %+v", got[0])
+	}
 }

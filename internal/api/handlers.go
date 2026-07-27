@@ -29,17 +29,37 @@ type Server struct {
 	workflow *approval.Workflow
 	mux      *http.ServeMux
 	tmpl     *template.Template // nil if templates failed to load; dashboard routes 503 in that case
+
+	// notifyMaxAttempts is the attempt count at which the dispatcher gives
+	// up, and therefore the threshold for "permanently failed". Zero means
+	// notifications are disabled and the failed-notifications route 404s.
+	notifyMaxAttempts int
+}
+
+// Option adjusts optional server behaviour.
+type Option func(*Server)
+
+// WithFailedNotifications enables GET /api/notifications/failed, reporting
+// events that reached maxAttempts without being delivered. Without it the
+// route 404s: an operator who configured no targets should be told the
+// surface does not exist, rather than shown an empty list that reads as
+// "everything was delivered".
+func WithFailedNotifications(maxAttempts int) Option {
+	return func(s *Server) { s.notifyMaxAttempts = maxAttempts }
 }
 
 // NewServer builds the API+dashboard handler. templatesDir may be empty,
 // in which case DefaultTemplatesDir is used; if templates fail to parse
 // the JSON API still works, only the HTML dashboard routes degrade.
-func NewServer(store database.Store, workflow *approval.Workflow, templatesDir string) *Server {
+func NewServer(store database.Store, workflow *approval.Workflow, templatesDir string, opts ...Option) *Server {
 	if templatesDir == "" {
 		templatesDir = DefaultTemplatesDir
 	}
 
 	s := &Server{store: store, workflow: workflow, mux: http.NewServeMux()}
+	for _, opt := range opts {
+		opt(s)
+	}
 
 	tmpl, err := template.ParseGlob(filepath.Join(templatesDir, "*.html"))
 	if err != nil {
@@ -65,6 +85,7 @@ func (s *Server) routes(staticDir string) {
 	s.mux.HandleFunc("GET /api/manifests/{id}/diff", s.handleAPIGetManifestDiff)
 	s.mux.HandleFunc("POST /api/manifests/{id}/approve", s.handleAPIApprove)
 	s.mux.HandleFunc("POST /api/manifests/{id}/reject", s.handleAPIReject)
+	s.mux.HandleFunc("GET /api/notifications/failed", s.handleAPIFailedNotifications)
 
 	s.mux.HandleFunc("GET /", s.handleDashboardHome)
 	s.mux.HandleFunc("GET /servers", s.handleDashboardServers)
@@ -142,6 +163,33 @@ func (s *Server) handleAPIGetManifestDiff(w http.ResponseWriter, r *http.Request
 		return
 	}
 	_, _ = w.Write([]byte(m.DiffJSON)) //nolint:gosec // G705: Content-Type is set to application/json above; DiffJSON is internally-generated, already-validated JSON, not rendered as HTML
+}
+
+// handleAPIFailedNotifications reports events the dispatcher gave up on.
+// Silent notification death is the exact failure the notification feature
+// exists to remove, so a target that stopped working stays queryable here
+// instead of disappearing.
+func (s *Server) handleAPIFailedNotifications(w http.ResponseWriter, r *http.Request) {
+	if s.notifyMaxAttempts == 0 {
+		writeJSONError(w, http.StatusNotFound, errors.New("notifications are not configured"))
+		return
+	}
+	ctx := r.Context()
+	rows, err := s.store.ListUndeliveredNotifications(ctx, s.notifyMaxAttempts)
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, err)
+		return
+	}
+	views := make([]FailedNotificationView, 0, len(rows))
+	for _, row := range rows {
+		v, err := toFailedNotificationView(ctx, s.store, row)
+		if err != nil {
+			writeJSONError(w, http.StatusInternalServerError, err)
+			return
+		}
+		views = append(views, v)
+	}
+	writeJSON(w, http.StatusOK, views)
 }
 
 type decisionRequest struct {

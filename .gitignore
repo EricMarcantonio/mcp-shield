@@ -6,6 +6,8 @@ data/*.db-wal
 data/*.db-shm
 config/servers.json
 config/testserver-tools.json
+# Holds webhook URLs and HMAC secrets, both capability-bearing credentials.
+config/notify.json
 *.log
 .DS_Store
 .idea/

@@ -6,7 +6,33 @@ All notable changes to mcp-shield are documented here. Format follows
 
 ## [Unreleased]
 
-Nothing yet.
+### Added
+- **Webhook notifications.** The gate fails closed, so a withheld capability
+  used to be invisible until someone happened to look at the dashboard.
+  mcp-shield now POSTs a versioned, HMAC-signed JSON event to configured
+  webhook targets when it records a new pending manifest (and, optionally,
+  on approve/reject). Slack and Discord are supported through a
+  `"format": "slack"` rendering with no SDK dependency. Configure via
+  `config/notify.json` (`NOTIFY_CONFIG_PATH`); see
+  [docs/notifications.md](docs/notifications.md).
+- `GET /api/notifications/failed` lists events the dispatcher gave up on,
+  with attempt counts and the last error. Returns 404 when notifications are
+  not configured. Silent notification death is the failure this feature
+  exists to remove, so a target that stops working stays visible.
+- `notification_outbox` table. The event is written in the same transaction
+  as the manifest row, so the two commit together and a crash between "gate
+  withheld something" and "operator was told" replays on restart. Delivery
+  is at-least-once with persisted backoff (1m, 5m, 25m, 2h, 12h, then
+  daily); receivers deduplicate on `event_id`.
+
+Notifications are opt-in and off by default: with no config file, behaviour
+is exactly as in 0.1.0. The schema addition is additive — an existing 0.1.0
+database is upgraded in place on open, with a test that builds a verbatim
+0.1.0 database and asserts every row survives.
+
+Nothing on the notification path can block, delay, or crash a gate decision:
+enqueue is one INSERT inside an already-open transaction, and all delivery
+happens in a background goroutine whose failures never propagate back.
 
 ## [0.1.0] - 2026-07-26
 

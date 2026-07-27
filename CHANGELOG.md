@@ -6,6 +6,10 @@ All notable changes to mcp-shield are documented here. Format follows
 
 ## [Unreleased]
 
+Nothing yet.
+
+## [0.1.1] - 2026-07-27
+
 ### Added
 - `mcp-shield connect <server> [--gateway URL]` — a stdio shim, and the
   answer to the limitation the README previously called its biggest. Claude
@@ -69,6 +73,18 @@ happens in a background goroutine whose failures never propagate back.
   (64 KiB), replacing the literals inside `StdioTransport`'s scanner so the
   upstream transport and the shim cannot drift apart on what constitutes an
   acceptable frame.
+
+### Fixed
+- Registering a server no longer fails when two requests for a
+  not-yet-seen server arrive together. Registration was a get-then-create
+  sequence, so both requests found no row, both inserted, and the loser
+  came back to the client as
+  `UNIQUE constraint failed: servers.name (2067)` — a gate-check error on
+  a request that was entirely valid. Any client that pipelines hits this
+  on its first connection to a new server, which is to say a real one;
+  the new stdio shim is what made it visible. Registration is now an
+  upsert that reads the row back, and a second call never rewrites an
+  already-registered endpoint.
 
 ## [0.1.0] - 2026-07-26
 
@@ -148,5 +164,6 @@ releasable by someone who is not its author.
   `build: .`; this has no effect until that tag exists in a public
   registry — local builds remain the working path.
 
-[Unreleased]: https://github.com/EricMarcantonio/mcp-shield/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/EricMarcantonio/mcp-shield/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/EricMarcantonio/mcp-shield/releases/tag/v0.1.1
 [0.1.0]: https://github.com/EricMarcantonio/mcp-shield/releases/tag/v0.1.0

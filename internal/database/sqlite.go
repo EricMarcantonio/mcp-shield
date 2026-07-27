@@ -92,7 +92,7 @@ type Store interface {
 	// lengthening it measurably. Nothing else in this interface may be
 	// added to that transaction.
 	EnqueueNotification(ctx context.Context, eventType string, manifestID int64) (int64, error)
-	DueNotifications(ctx context.Context, now time.Time, limit int) ([]OutboxRow, error)
+	DueNotifications(ctx context.Context, now time.Time, maxAttempts, limit int) ([]OutboxRow, error)
 	MarkNotificationDelivered(ctx context.Context, id int64, now time.Time) error
 	MarkNotificationFailed(ctx context.Context, id int64, nextAttempt time.Time, lastError string) error
 	ListUndeliveredNotifications(ctx context.Context, minAttempts int) ([]OutboxRow, error)
@@ -257,8 +257,8 @@ func (q queries) EnqueueNotification(ctx context.Context, eventType string, mani
 	return enqueueNotification(ctx, q.e, eventType, manifestID)
 }
 
-func (q queries) DueNotifications(ctx context.Context, now time.Time, limit int) ([]OutboxRow, error) {
-	return dueNotifications(ctx, q.e, now, limit)
+func (q queries) DueNotifications(ctx context.Context, now time.Time, maxAttempts, limit int) ([]OutboxRow, error) {
+	return dueNotifications(ctx, q.e, now, maxAttempts, limit)
 }
 
 func (q queries) MarkNotificationDelivered(ctx context.Context, id int64, now time.Time) error {
@@ -474,15 +474,23 @@ func enqueueNotification(ctx context.Context, e execer, eventType string, manife
 	return id, nil
 }
 
-// dueNotifications returns undelivered rows whose backoff has elapsed, in id
-// order. Ascending id is the ordering promise: events for one server are
-// delivered in the order the gate recorded them.
-func dueNotifications(ctx context.Context, e execer, now time.Time, limit int) ([]OutboxRow, error) {
+// dueNotifications returns undelivered rows whose backoff has elapsed and
+// which still have delivery attempts left, in id order. Ascending id is the
+// ordering promise: events for one server are delivered in the order the
+// gate recorded them.
+//
+// maxAttempts is part of the query rather than a filter the caller applies
+// afterwards, and that placement matters. Rows come back oldest-first, so a
+// target that was unreachable for a week would otherwise fill every batch
+// with events already given up on, and a fresh "your tool just vanished"
+// event would never be reached. Exhausted rows are excluded here and stay
+// visible through ListUndeliveredNotifications instead.
+func dueNotifications(ctx context.Context, e execer, now time.Time, maxAttempts, limit int) ([]OutboxRow, error) {
 	rows, err := e.QueryContext(ctx, `
 		SELECT id, event_type, manifest_id, attempts, next_attempt_at, delivered_at, last_error, created_at
 		FROM notification_outbox
-		WHERE delivered_at IS NULL AND next_attempt_at <= ?
-		ORDER BY id LIMIT ?`, now.UTC(), limit)
+		WHERE delivered_at IS NULL AND next_attempt_at <= ? AND attempts < ?
+		ORDER BY id LIMIT ?`, now.UTC(), maxAttempts, limit)
 	if err != nil {
 		return nil, fmt.Errorf("database: due notifications: %w", err)
 	}

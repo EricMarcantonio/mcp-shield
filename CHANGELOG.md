@@ -6,7 +6,42 @@ All notable changes to mcp-shield are documented here. Format follows
 
 ## [Unreleased]
 
-Nothing yet.
+### Added
+- `mcp-shield connect <server> [--gateway URL]` — a stdio shim, and the
+  answer to the limitation the README previously called its biggest. Claude
+  Desktop's classic config spawns an MCP server as a subprocess and speaks
+  newline-delimited JSON-RPC over its stdin/stdout; it cannot point at an
+  HTTP endpoint. `connect` is that subprocess: each inbound frame becomes
+  one `POST {gateway}/mcp/{server}`, each response one outbound frame. It
+  is a subcommand of the existing binary rather than a second artifact, so
+  the release pipeline already ships it, and the gate path is untouched.
+  The gateway URL also reads from `MCP_SHIELD_PROXY`. See
+  [Client compatibility](README.md#client-compatibility) for the Claude
+  Desktop config block; decision D3 in
+  [the design doc](docs/superpowers/specs/2026-07-25-oss-hardening-design.md#d3--transport-sequencing-amends-the-phase-9-structure-below).
+
+  Behaviour worth knowing: requests are forwarded concurrently, because
+  clients pipeline them, and each response is written as one whole frame
+  under a lock so concurrent replies cannot interleave. Frames are capped
+  at 8 MiB in both directions — a larger one is refused with a JSON-RPC
+  error rather than silently truncated, since a truncated `tools/list` in a
+  gateway that gates on capabilities is a correctness hole, not a
+  performance nuisance. Notifications (no `id`) get no reply under any
+  outcome. Every failure — unreachable gateway, non-2xx, a body that is not
+  JSON-RPC — comes back as a JSON-RPC error naming the cause, and every
+  human-readable diagnostic goes to stderr, because stdout is the protocol
+  channel.
+
+  Still one JSON-RPC request per HTTP call, and there are **no
+  server-initiated notifications**: the gateway re-fetches and re-gates on
+  every call by design, so `listChanged` push semantics are intentionally
+  absent rather than missing.
+
+### Changed
+- `internal/mcp` exports `MaxFrameSize` (8 MiB) and `FrameBufferSize`
+  (64 KiB), replacing the literals inside `StdioTransport`'s scanner so the
+  upstream transport and the shim cannot drift apart on what constitutes an
+  acceptable frame.
 
 ## [0.1.0] - 2026-07-26
 

@@ -11,6 +11,8 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"runtime/debug"
+	"strings"
 	"syscall"
 	"time"
 
@@ -22,6 +24,24 @@ import (
 // version is stamped by GoReleaser via -ldflags at release time
 // (-X main.version={{.Version}}); "dev" identifies a local, non-release build.
 var version = "dev"
+
+// resolveVersion reports the build's version string.
+//
+// GoReleaser stamps `version` via -ldflags, so release archives and the Docker
+// image are already correct. `go install module@vX.Y.Z` applies no ldflags,
+// which left an installed binary reporting "dev" and unable to say which
+// release it came from. The module version the toolchain recorded in the build
+// info is exactly that answer, so prefer it when nothing was stamped.
+func resolveVersion() string {
+	if version != "dev" {
+		return version
+	}
+	info, ok := debug.ReadBuildInfo()
+	if !ok || info.Main.Version == "" || info.Main.Version == "(devel)" {
+		return version
+	}
+	return strings.TrimPrefix(info.Main.Version, "v")
+}
 
 func main() {
 	if len(os.Args) > 1 && os.Args[1] != "serve" {

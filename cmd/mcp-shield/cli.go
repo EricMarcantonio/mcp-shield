@@ -24,10 +24,12 @@ func apiBase() string {
 // usage is the single source of truth for what subcommands exist; main
 // routes anything that is not "serve" here so the list cannot drift between
 // two switch statements.
-const usage = "usage: mcp-shield [serve|servers|manifests|approve <id>|reject <id>|diff <id>|version]"
+const usage = "usage: mcp-shield [serve|connect <server>|servers|manifests|approve <id>|reject <id>|diff <id>|version]"
 
 func runCLI(cmd string, args []string) error {
 	switch cmd {
+	case "connect":
+		return cliConnect(args)
 	case "version":
 		fmt.Println("mcp-shield " + resolveVersion())
 		return nil

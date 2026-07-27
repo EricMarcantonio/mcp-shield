@@ -9,6 +9,22 @@ import (
 	"sync"
 )
 
+// Frame sizing for newline-delimited JSON-RPC. Every reader of the stdio
+// convention — the upstream transport here and the `mcp-shield connect`
+// shim — shares these so a frame that one side will emit is a frame the
+// other side will accept.
+const (
+	// FrameBufferSize is the initial read buffer for one frame. It grows on
+	// demand up to MaxFrameSize.
+	FrameBufferSize = 64 * 1024
+	// MaxFrameSize caps a single frame. bufio.Scanner's own 64 KiB default
+	// is far too small for a tools/list reply from a server with many tools,
+	// and overflowing it truncates capability data silently — which in a
+	// gateway that gates on capabilities would be a correctness hole, not a
+	// performance nuisance.
+	MaxFrameSize = 8 * 1024 * 1024
+)
+
 // Transport is a duplex byte-frame channel to a single MCP peer.
 // Frames are newline-delimited JSON-RPC messages (the stdio MCP convention).
 type Transport interface {
@@ -87,7 +103,7 @@ func (t *StdioTransport) readLoop(stdout io.ReadCloser) {
 	defer close(t.errs)
 
 	scanner := bufio.NewScanner(stdout)
-	scanner.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
+	scanner.Buffer(make([]byte, 0, FrameBufferSize), MaxFrameSize)
 	for scanner.Scan() {
 		line := scanner.Bytes()
 		if len(line) == 0 {

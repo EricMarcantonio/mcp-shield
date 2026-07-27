@@ -36,16 +36,28 @@ checksum:
 changelog:
   use: github
 
+# The org.opencontainers.image.source label is what links the published
+# package to this repository on GHCR: without it the package never appears in
+# the repo's Packages sidebar and does not inherit the repo's access
+# permissions. Package *visibility* is still a separate, web-UI-only toggle --
+# GitHub exposes no API for it -- so a freshly published package stays private
+# until someone flips it by hand once.
 dockers:
-  # Repository is private today (D4): images publish to GHCR under this
-  # project's org, but won't be anonymously pullable until the repo (and its
-  # package visibility) is made public. See release.yml for the same note.
   - goarch: amd64
     dockerfile: Dockerfile.goreleaser
     image_templates:
       - ghcr.io/ericmarcantonio/mcp-shield:{{ .Version }}-amd64
     build_flag_templates:
       - --platform=linux/amd64
+      - --label=org.opencontainers.image.source=https://github.com/EricMarcantonio/mcp-shield
+      - --label=org.opencontainers.image.title={{ .ProjectName }}
+      - --label=org.opencontainers.image.description=Zero Trust gateway for the Model Context Protocol
+      - --label=org.opencontainers.image.url=https://github.com/EricMarcantonio/mcp-shield
+      - --label=org.opencontainers.image.documentation=https://github.com/EricMarcantonio/mcp-shield#readme
+      - --label=org.opencontainers.image.licenses=Apache-2.0
+      - --label=org.opencontainers.image.version={{ .Version }}
+      - --label=org.opencontainers.image.revision={{ .FullCommit }}
+      - --label=org.opencontainers.image.created={{ .Date }}
     extra_files: [web]
   - goarch: arm64
     dockerfile: Dockerfile.goreleaser
@@ -53,6 +65,15 @@ dockers:
       - ghcr.io/ericmarcantonio/mcp-shield:{{ .Version }}-arm64
     build_flag_templates:
       - --platform=linux/arm64
+      - --label=org.opencontainers.image.source=https://github.com/EricMarcantonio/mcp-shield
+      - --label=org.opencontainers.image.title={{ .ProjectName }}
+      - --label=org.opencontainers.image.description=Zero Trust gateway for the Model Context Protocol
+      - --label=org.opencontainers.image.url=https://github.com/EricMarcantonio/mcp-shield
+      - --label=org.opencontainers.image.documentation=https://github.com/EricMarcantonio/mcp-shield#readme
+      - --label=org.opencontainers.image.licenses=Apache-2.0
+      - --label=org.opencontainers.image.version={{ .Version }}
+      - --label=org.opencontainers.image.revision={{ .FullCommit }}
+      - --label=org.opencontainers.image.created={{ .Date }}
     extra_files: [web]
 
 docker_manifests:

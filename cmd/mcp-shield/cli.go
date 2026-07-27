@@ -29,7 +29,7 @@ const usage = "usage: mcp-shield [serve|servers|manifests|approve <id>|reject <i
 func runCLI(cmd string, args []string) error {
 	switch cmd {
 	case "version":
-		fmt.Println("mcp-shield " + version)
+		fmt.Println("mcp-shield " + resolveVersion())
 		return nil
 	case "servers":
 		return cliServers()

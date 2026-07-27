@@ -301,17 +301,36 @@ func (s *txStore) WithTx(_ context.Context, fn func(Store) error) error {
 
 // --- shared query helpers, parameterized over execer -----------------------
 
+// createServer registers a server by name, or returns the existing row if one
+// is already registered under that name.
+//
+// The upsert is not a convenience. Callers reach here via a get-then-create
+// sequence, and two requests arriving together for a server seen for the first
+// time both find no row and both insert. A plain INSERT makes the loser fail
+// with "UNIQUE constraint failed: servers.name", which surfaces to the client
+// as a gate-check error on a request that was perfectly valid. Any client that
+// pipelines -- which is to say a real one -- can hit this on its very first
+// connection to a new server.
+//
+// DO NOTHING rather than DO UPDATE: the endpoint of an already-registered
+// server is not this function's to change, and silently rewriting it here
+// would make a concurrent first-touch able to mutate existing registration.
 func createServer(ctx context.Context, e execer, name, endpoint string) (*Server, error) {
 	now := time.Now().UTC()
-	res, err := e.ExecContext(ctx, `INSERT INTO servers (name, endpoint, created_at) VALUES (?, ?, ?)`, name, endpoint, now)
+	_, err := e.ExecContext(ctx,
+		`INSERT INTO servers (name, endpoint, created_at) VALUES (?, ?, ?)
+		 ON CONFLICT(name) DO NOTHING`,
+		name, endpoint, now)
 	if err != nil {
 		return nil, fmt.Errorf("database: create server: %w", err)
 	}
-	id, err := res.LastInsertId()
+	// Read back rather than trusting LastInsertId: on the DO NOTHING path no
+	// row was inserted, so the id belongs to whoever won the race.
+	created, err := getServerByName(ctx, e, name)
 	if err != nil {
-		return nil, fmt.Errorf("database: create server: last insert id: %w", err)
+		return nil, fmt.Errorf("database: create server: read back: %w", err)
 	}
-	return &Server{ID: id, Name: name, Endpoint: endpoint, CreatedAt: now}, nil
+	return created, nil
 }
 
 func getServerByName(ctx context.Context, e execer, name string) (*Server, error) {

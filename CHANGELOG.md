@@ -8,6 +8,25 @@ All notable changes to mcp-shield are documented here. Format follows
 
 Nothing yet.
 
+## [0.1.2] - 2026-07-27
+
+### Added
+- The published container image now carries SLSA build provenance, not
+  just the release archives. Provenance is looked up by an artifact's
+  identity, and an image's identity is the digest of its manifest list in
+  the registry rather than a file on disk, so it needs an attestation of
+  its own. The attestation is also pushed to the registry beside the
+  image, so it travels with a pulled image instead of existing only as a
+  GitHub-side record. Verify with:
+
+  ```sh
+  gh attestation verify oci://ghcr.io/ericmarcantonio/mcp-shield:0.1.2 \
+    --repo EricMarcantonio/mcp-shield
+  ```
+
+  For a project whose subject is knowing what an artifact actually
+  contains, the image is the artifact most people run.
+
 ## [0.1.1] - 2026-07-27
 
 ### Added
@@ -164,6 +183,7 @@ releasable by someone who is not its author.
   `build: .`; this has no effect until that tag exists in a public
   registry — local builds remain the working path.
 
-[Unreleased]: https://github.com/EricMarcantonio/mcp-shield/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/EricMarcantonio/mcp-shield/compare/v0.1.2...HEAD
+[0.1.2]: https://github.com/EricMarcantonio/mcp-shield/releases/tag/v0.1.2
 [0.1.1]: https://github.com/EricMarcantonio/mcp-shield/releases/tag/v0.1.1
 [0.1.0]: https://github.com/EricMarcantonio/mcp-shield/releases/tag/v0.1.0

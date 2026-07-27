@@ -75,6 +75,32 @@ jobs:
       # repositories". Skipping rather than failing keeps a private-repo
       # release whole; the moment this repo is public the condition flips and
       # attestation happens with no edit here.
+      # The container image needs a separate attestation from the archives:
+      # subject-path hashes files on disk, but the image's identity is the
+      # digest of its manifest list in the registry. Recomputing that digest
+      # from the raw manifest bytes is exactly how a registry derives it, and
+      # is what `gh attestation verify oci://...` looks the attestation up by.
+      - name: Resolve published image digest
+        id: image_digest
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          image="ghcr.io/ericmarcantonio/mcp-shield"
+          digest="$(docker buildx imagetools inspect "$image:$version" --raw | sha256sum | awk '{print $1}')"
+          echo "digest=sha256:${digest}" >> "$GITHUB_OUTPUT"
+          echo "Resolved $image:$version -> sha256:${digest}"
+
+      - name: Attest container image
+        if: ${{ !github.event.repository.private }}
+        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
+        with:
+          subject-name: ghcr.io/ericmarcantonio/mcp-shield
+          subject-digest: ${{ steps.image_digest.outputs.digest }}
+          # Store the attestation in the registry beside the image, so it
+          # travels with a pulled image rather than only existing as a
+          # GitHub-side record.
+          push-to-registry: true
+
       - name: Attest release binaries
         if: ${{ !github.event.repository.private }}
         uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1

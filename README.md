@@ -59,9 +59,10 @@ docker run -p 8080:8080 -p 8081:8081 \
 
 ### 3. Approve the first connection
 
-Point an MCP-capable HTTP client at `http://localhost:8080/mcp/my-server`
-(see [Client compatibility](#client-compatibility) — HTTP JSON-RPC only,
-for now). First connection creates a PENDING manifest; since there's no
+Point an MCP-capable HTTP client at `http://localhost:8080/mcp/my-server`,
+or wire up a stdio client such as Claude Desktop with `mcp-shield connect`
+(see [Client compatibility](#client-compatibility)). First connection
+creates a PENDING manifest; since there's no
 approved baseline yet, `tools/list` comes back empty and any `tools/call`
 is blocked, until you review and approve it:
 
@@ -179,18 +180,72 @@ for manual and automated testing of the approval pipeline — see
 
 ## Client compatibility
 
-Works today: any client that can send a JSON-RPC request as an HTTP POST
-to `/mcp/{server}` — this is not yet the spec's Streamable HTTP transport,
-just a plain HTTP wrapper.
+Works today, two ways:
 
-Not yet supported: Claude Desktop's classic stdio-spawned-server config,
-or any other client that only knows how to launch a subprocess and speak
-JSON-RPC over its stdin/stdout. A stdio shim to bridge that case is a
-documented future-extension seam (`internal/mcp.Transport`) and an open
-design question — transport strategy, decision D3 in
-[the design doc](docs/superpowers/specs/2026-07-25-oss-hardening-design.md#design-question-b--upstream--transport-strategy-decision-d3)
-— it is **not built** in the current version. There is no
-`mcp-shield connect` command.
+- Any client that can send a JSON-RPC request as an HTTP POST to
+  `/mcp/{server}`. This is not yet the spec's Streamable HTTP transport,
+  just a plain HTTP wrapper.
+- Any client that spawns a subprocess and speaks newline-delimited
+  JSON-RPC over its stdin/stdout — Claude Desktop's classic config, among
+  others — via `mcp-shield connect`, below.
+
+### Claude Desktop (stdio) — `mcp-shield connect`
+
+Claude Desktop launches an MCP server as a subprocess; it cannot point at
+an HTTP endpoint. `mcp-shield connect <server>` is that subprocess: it
+reads JSON-RPC frames from stdin, forwards each one as a
+`POST {gateway}/mcp/{server}`, and writes the responses to stdout.
+
+Start the gateway as usual, then add this to
+`~/Library/Application Support/Claude/claude_desktop_config.json`
+(macOS) or `%APPDATA%\Claude\claude_desktop_config.json` (Windows), where
+`calendar` matches a `name` in your `config/servers.json`:
+
+```json
+{
+  "mcpServers": {
+    "calendar": {
+      "command": "/usr/local/bin/mcp-shield",
+      "args": ["connect", "calendar", "--gateway", "http://localhost:8080"]
+    }
+  }
+}
+```
+
+Use an absolute `command` path — Claude Desktop does not inherit your
+shell's `PATH`. If you installed with `go install`, that path is usually
+`~/go/bin/mcp-shield`. `--gateway` may be omitted (it defaults to
+`http://localhost:8080`, overridable with the `MCP_SHIELD_PROXY`
+environment variable). Restart Claude Desktop after editing the file.
+
+The first connection creates a PENDING manifest, so `calendar` will show
+up with no tools until you approve it — see
+[Approve the first connection](#3-approve-the-first-connection). Approve,
+then start a new chat; the tools appear.
+
+**What this does and does not do.** Requests are forwarded concurrently
+(clients pipeline them) and each response is written as one whole frame,
+so ordering and interleaving are handled. But it is still **one JSON-RPC
+request per HTTP call** — there is no persistent stream, no batching, and
+no session state in the shim. And there are **no server-initiated
+notifications**: nothing reaches the client that the client did not ask
+for, so `notifications/tools/list_changed` and friends never arrive. That
+is deliberate rather than missing. The gateway re-fetches and re-gates the
+upstream's full capability set on *every* call, so a changed tool list is
+caught at the next request without anyone needing to push about it; a
+`listChanged` shortcut would be a cache the gate exists to avoid.
+
+Frames are capped at 8 MiB in each direction, matching the upstream stdio
+transport. A larger frame is refused with a JSON-RPC error rather than
+truncated. Failures — gateway unreachable, a non-2xx status, a body that
+is not JSON-RPC — come back as a JSON-RPC error naming the cause; all
+human-readable diagnostics go to stderr, because stdout is the protocol
+channel.
+
+Native Streamable HTTP (which would let spec-conformant clients connect
+without the shim, and let the gateway proxy *remote* MCP servers) is
+sequenced next — decision D3 in
+[the design doc](docs/superpowers/specs/2026-07-25-oss-hardening-design.md#design-question-b--upstream--transport-strategy-decision-d3).
 
 ## Development
 
@@ -213,13 +268,14 @@ without notice.
 ## Explicitly out of scope for this MVP
 
 Kubernetes deployment, a distributed database, advanced sandboxing, eBPF,
-runtime syscall monitoring, notifications (planned, not built — see
-[decision D2 in the design doc](docs/superpowers/specs/2026-07-25-oss-hardening-design.md#design-question-a--notifications-decision-d2)),
-and the stdio shim mentioned above. Left as seams for later, not built:
+runtime syscall monitoring, and notifications (planned, not built — see
+[decision D2 in the design doc](docs/superpowers/specs/2026-07-25-oss-hardening-design.md#design-question-a--notifications-decision-d2)).
+Left as seams for later, not built:
 - `database.Store` is an interface — a Postgres backend can implement it
   without touching `approval`/`api`/`mcp`.
-- `mcp.Transport` is an interface — an HTTP/SSE transport or a
-  Claude-Desktop stdio shim can be added without touching `UpstreamClient`.
+- `mcp.Transport` is an interface — a Streamable HTTP transport can be
+  added without touching `UpstreamClient`, which is what would let the
+  gateway proxy *remote* MCP servers rather than only local subprocesses.
 - `manifest.Hash()` output is a plain hex SHA256 string a future
   Sigstore/cosign signing step could wrap.
 - OAuth, network policy enforcement, and runtime sandboxing are not

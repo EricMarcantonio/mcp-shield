@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -438,12 +439,18 @@ func TestShimKeepsNotificationFailuresOffStdout(t *testing.T) {
 	}
 }
 
+// Phase 5 found the same class of bug in the upstream stdio transport: a
+// goroutine started per frame that outlived the loop which started it, so
+// every dead session leaked one. This asserts on the goroutine dump rather
+// than assuming.
 func TestShimReturnsWhenStdinClosesAndLeaksNoGoroutines(t *testing.T) {
+	const requests = 25
+
 	backend := echoBackend(t)
 	defer backend.Close()
 
-	lines := make([]string, 0, 25)
-	for i := 1; i <= 25; i++ {
+	lines := make([]string, 0, requests)
+	for i := 1; i <= requests; i++ {
 		lines = append(lines, fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"tools/list"}`, i))
 	}
 
@@ -451,43 +458,115 @@ func TestShimReturnsWhenStdinClosesAndLeaksNoGoroutines(t *testing.T) {
 	var diag pipeWriter
 	s.diag = &diag
 
-	// Warm the connection pool first so its goroutines are in the baseline.
+	// One warm-up session first, so the HTTP connection pool's goroutines are
+	// already in the baseline and only growth from the real run counts.
 	var warmup pipeWriter
 	if err := s.run(strings.NewReader(`{"jsonrpc":"2.0","id":0,"method":"tools/list"}`+"\n"), &warmup); err != nil {
 		t.Fatalf("warmup: %v", err)
 	}
-	baseline := settledGoroutines(t, 0)
+	baseline := stableGoroutineCount()
 
 	var out pipeWriter
 	if err := s.run(strings.NewReader(strings.Join(lines, "\n")+"\n"), &out); err != nil {
 		t.Fatalf("shim: %v", err)
 	}
-	if got := len(responseLines(t, out.String())); got != 25 {
-		t.Fatalf("expected 25 responses (run must drain before returning), got %d", got)
+	// run must not return until every forwarded request has been written,
+	// which is the other half of not leaking: draining, not abandoning.
+	if got := len(responseLines(t, out.String())); got != requests {
+		t.Fatalf("expected %d responses (run must drain before returning), got %d", requests, got)
 	}
 
-	if after := settledGoroutines(t, baseline); after > baseline {
-		buf := make([]byte, 1<<16)
-		buf = buf[:runtime.Stack(buf, true)]
-		t.Fatalf("goroutine count %d -> %d after the shim returned; leak:\n%s", baseline, after, buf)
+	// Two assertions, because they catch different leaks. The frame count is
+	// specific — it names a shim goroutine that outlived run. The total count
+	// is broad — it catches anything the shim failed to release on the way
+	// out, an unclosed connection pool being the obvious candidate.
+	if frames, dump := lingeringShimGoroutines(); frames > 0 {
+		t.Fatalf("%d shim stack frame(s) still running after run returned:\n%s", frames, dump)
+	}
+	if after := settledGoroutineCount(baseline); after > baseline {
+		_, dump := liveShimFrames()
+		t.Fatalf("goroutine count %d -> %d across %d requests:\n%s", baseline, after, requests, dump)
 	}
 }
 
-// settledGoroutines polls until the count stops dropping, so the assertion
-// does not race the runtime tearing down pooled connections.
-func settledGoroutines(t *testing.T, target int) int {
-	t.Helper()
-	deadline := time.Now().Add(3 * time.Second)
+// stableGoroutineCount samples until two consecutive reads agree, which is a
+// baseline that does not race the runtime still standing goroutines up.
+func stableGoroutineCount() int {
+	previous := -1
+	for range 200 {
+		time.Sleep(5 * time.Millisecond)
+		current := runtime.NumGoroutine()
+		if current == previous {
+			return current
+		}
+		previous = current
+	}
+	return previous
+}
+
+// settledGoroutineCount polls until the count falls back to target, so the
+// assertion does not race the runtime tearing down pooled connections.
+func settledGoroutineCount(target int) int {
 	count := runtime.NumGoroutine()
-	for time.Now().Before(deadline) {
+	for range 200 {
 		if count <= target {
 			return count
 		}
-		time.Sleep(20 * time.Millisecond)
-		runtime.GC()
+		time.Sleep(5 * time.Millisecond)
 		count = runtime.NumGoroutine()
 	}
 	return count
+}
+
+// liveShimFrames samples the goroutine dump once and counts stack frames
+// executing shim code. That is the specific half of the leak question: a
+// raw runtime.NumGoroutine() comparison also moves with the HTTP connection
+// pool, so on its own it says less about what actually leaked.
+func liveShimFrames() (int, string) {
+	// Not "main.(*shim)." — under `go test` the symbol carries the full
+	// import path rather than "main", and that mismatch would make the
+	// leak assertion below quietly vacuous.
+	const shimFrame = "(*shim)."
+	buf := make([]byte, 1<<20)
+	dump := buf[:runtime.Stack(buf, true)]
+	return bytes.Count(dump, []byte(shimFrame)), string(dump)
+}
+
+// lingeringShimGoroutines is liveShimFrames with a short poll, absorbing the
+// gap between a goroutine's last statement and its actual exit.
+func lingeringShimGoroutines() (int, string) {
+	count, dump := liveShimFrames()
+	for range 100 {
+		if count == 0 {
+			return 0, ""
+		}
+		time.Sleep(10 * time.Millisecond)
+		count, dump = liveShimFrames()
+	}
+	return count, dump
+}
+
+// The leak assertion above is only worth anything if liveShimFrames can
+// actually recognise a shim goroutine — a stale frame string would make it
+// pass unconditionally, which is exactly what the first draft of it did.
+// This samples from inside the backend handler, where the goroutine that
+// issued the request is provably parked in handle -> forward.
+func TestLeakDetectorRecognisesALiveShimGoroutine(t *testing.T) {
+	var framesMidRequest int
+	var dumpMidRequest string
+
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		framesMidRequest, dumpMidRequest = liveShimFrames()
+		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{}}`))
+	}))
+	defer backend.Close()
+
+	if _, _, err := runLines(t, backend.URL, `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`); err != nil {
+		t.Fatalf("shim: %v", err)
+	}
+	if framesMidRequest == 0 {
+		t.Fatalf("no shim frames seen while a request was in flight — the frame string is stale, so the leak test is vacuous. Dump:\n%s", dumpMidRequest)
+	}
 }
 
 // assertErrorFrame checks the shape every gateway-failure frame must have:

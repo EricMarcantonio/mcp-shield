@@ -5,6 +5,7 @@ import (
 	"errors"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/EricMarcantonio/mcp-shield/internal/database"
 	"github.com/EricMarcantonio/mcp-shield/internal/manifest"
@@ -241,4 +242,154 @@ func TestFailModeWarnAllowsButFlags(t *testing.T) {
 	if res.State != database.StatePending {
 		t.Fatalf("expected PENDING, got %s", res.State)
 	}
+}
+
+// --- notifications ----------------------------------------------------------
+
+func newNotifyingWorkflow(t *testing.T) (*Workflow, database.Store, int64) {
+	t.Helper()
+	store, err := database.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	srv, err := store.CreateServer(context.Background(), "calendar", "")
+	if err != nil {
+		t.Fatalf("create server: %v", err)
+	}
+	return New(store, FailModeBlock, WithNotifications()), store, srv.ID
+}
+
+func queuedNotifications(t *testing.T, store database.Store) []database.OutboxRow {
+	t.Helper()
+	rows, err := store.DueNotifications(context.Background(), time.Now().UTC().Add(time.Hour), 100, 100)
+	if err != nil {
+		t.Fatalf("due notifications: %v", err)
+	}
+	return rows
+}
+
+func TestNotificationsAreOffUnlessRequested(t *testing.T) {
+	ctx := context.Background()
+	wf, store, serverID := newTestWorkflow(t)
+
+	if _, err := wf.CheckAndRecord(ctx, serverID, toolManifest(t, "calendar_read")); err != nil {
+		t.Fatalf("check and record: %v", err)
+	}
+	if rows := queuedNotifications(t, store); len(rows) != 0 {
+		t.Fatalf("a workflow built without WithNotifications must enqueue nothing, got %+v", rows)
+	}
+}
+
+func TestNewPendingManifestEnqueuesNotification(t *testing.T) {
+	ctx := context.Background()
+	wf, store, serverID := newNotifyingWorkflow(t)
+	m := toolManifest(t, "calendar_read")
+
+	res, err := wf.CheckAndRecord(ctx, serverID, m)
+	if err != nil {
+		t.Fatalf("first check: %v", err)
+	}
+
+	rows := queuedNotifications(t, store)
+	if len(rows) != 1 {
+		t.Fatalf("expected one queued notification, got %d", len(rows))
+	}
+	if rows[0].EventType != database.EventManifestPending || rows[0].ManifestID != res.ManifestID {
+		t.Fatalf("unexpected outbox row: %+v", rows[0])
+	}
+
+	// A reconnect re-presents the same hash. The manifest row is reused, so
+	// no second event: a flapping upstream must not become a notification
+	// storm for a change the approver has already been told about.
+	if _, err := wf.CheckAndRecord(ctx, serverID, m); err != nil {
+		t.Fatalf("second check: %v", err)
+	}
+	if rows := queuedNotifications(t, store); len(rows) != 1 {
+		t.Fatalf("re-seeing a known hash must not enqueue again, got %d rows", len(rows))
+	}
+}
+
+func TestApproveAndRejectEnqueueTheirDecisions(t *testing.T) {
+	ctx := context.Background()
+	wf, store, serverID := newNotifyingWorkflow(t)
+
+	approved, err := wf.CheckAndRecord(ctx, serverID, toolManifest(t, "calendar_read"))
+	if err != nil {
+		t.Fatalf("check: %v", err)
+	}
+	if err := wf.Approve(ctx, approved.ManifestID, "eric", "fine"); err != nil {
+		t.Fatalf("approve: %v", err)
+	}
+
+	rejected, err := wf.CheckAndRecord(ctx, serverID, toolManifest(t, "calendar_read", "calendar_delete"))
+	if err != nil {
+		t.Fatalf("check: %v", err)
+	}
+	if err := wf.Reject(ctx, rejected.ManifestID, "eric", "no"); err != nil {
+		t.Fatalf("reject: %v", err)
+	}
+
+	var seen []string
+	for _, row := range queuedNotifications(t, store) {
+		seen = append(seen, row.EventType)
+	}
+	want := []string{
+		database.EventManifestPending,
+		database.EventManifestApproved,
+		database.EventManifestPending,
+		database.EventManifestRejected,
+	}
+	if len(seen) != len(want) {
+		t.Fatalf("expected %v, got %v", want, seen)
+	}
+	for i := range want {
+		if seen[i] != want[i] {
+			t.Fatalf("expected %v in outbox id order, got %v", want, seen)
+		}
+	}
+}
+
+// TestManifestAndItsNotificationCommitTogether is the transactional outbox
+// property seen from the gate's side. If the enqueue fails, the manifest
+// insert must fail with it — otherwise the gate could withhold a capability
+// that no event will ever announce, which is the silent failure this whole
+// feature exists to remove.
+func TestManifestAndItsNotificationCommitTogether(t *testing.T) {
+	ctx := context.Background()
+	store, err := database.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	srv, _ := store.CreateServer(ctx, "calendar", "")
+
+	failing := &enqueueFailingStore{Store: store}
+	wf := New(failing, FailModeBlock, WithNotifications())
+
+	if _, err := wf.CheckAndRecord(ctx, srv.ID, toolManifest(t, "calendar_read")); err == nil {
+		t.Fatal("expected CheckAndRecord to fail when the outbox write fails")
+	}
+
+	pending, err := store.ListPendingManifests(ctx)
+	if err != nil {
+		t.Fatalf("list pending: %v", err)
+	}
+	if len(pending) != 0 {
+		t.Fatalf("the manifest must roll back with its notification, got %+v", pending)
+	}
+}
+
+type enqueueFailingStore struct {
+	database.Store
+}
+
+func (s *enqueueFailingStore) EnqueueNotification(context.Context, string, int64) (int64, error) {
+	return 0, errors.New("outbox is unavailable")
+}
+
+func (s *enqueueFailingStore) WithTx(ctx context.Context, fn func(database.Store) error) error {
+	return s.Store.WithTx(ctx, func(tx database.Store) error {
+		return fn(&enqueueFailingStore{Store: tx})
+	})
 }

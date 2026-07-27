@@ -18,6 +18,7 @@ import (
 	"github.com/EricMarcantonio/mcp-shield/internal/database"
 	"github.com/EricMarcantonio/mcp-shield/internal/manifest"
 	"github.com/EricMarcantonio/mcp-shield/internal/mcp"
+	"github.com/EricMarcantonio/mcp-shield/internal/notify"
 )
 
 type Config struct {
@@ -31,12 +32,22 @@ type Config struct {
 	// UpstreamTimeout bounds one proxied request's upstream work; zero
 	// uses mcp.DefaultUpstreamTimeout.
 	UpstreamTimeout time.Duration
+
+	// NotifyConfigPath points at the notification config. A missing file
+	// disables notifications, which is the default.
+	NotifyConfigPath string
 }
 
 type App struct {
 	store      *database.SQLiteStore
 	workflow   *approval.Workflow
 	downstream *mcp.DownstreamHandler
+
+	// dispatcher is nil when notifications are disabled. It is deliberately
+	// not reachable from any request path: it is started by Start, stopped
+	// by Shutdown, and nothing in between asks it anything.
+	dispatcher     *notify.Dispatcher
+	stopDispatcher context.CancelFunc
 
 	proxyLn  net.Listener
 	apiLn    net.Listener
@@ -57,12 +68,17 @@ func New(cfg Config) (*App, error) {
 		cfg.APIAddr = ":8081"
 	}
 
+	notifyCfg, err := notify.LoadConfig(cfg.NotifyConfigPath)
+	if err != nil {
+		return nil, fmt.Errorf("app: load notification config: %w", err)
+	}
+
 	store, err := database.Open(cfg.DatabasePath)
 	if err != nil {
 		return nil, fmt.Errorf("app: open database: %w", err)
 	}
 
-	workflow := approval.New(store, cfg.FailMode)
+	workflow := approval.New(store, cfg.FailMode, approvalOptions(notifyCfg)...)
 
 	gate := &gateAdapter{store: store, workflow: workflow}
 	downstream, err := mcp.NewDownstreamHandler(cfg.Servers, gate)
@@ -90,12 +106,13 @@ func New(cfg Config) (*App, error) {
 	proxyMux := http.NewServeMux()
 	proxyMux.Handle("/mcp/", downstream)
 
-	apiHandler := api.NewServer(store, workflow, cfg.TemplatesDir)
+	apiHandler := api.NewServer(store, workflow, cfg.TemplatesDir, apiOptions(notifyCfg)...)
 
 	a := &App{
 		store:      store,
 		workflow:   workflow,
 		downstream: downstream,
+		dispatcher: newDispatcher(store, notifyCfg),
 		proxyLn:    proxyLn,
 		apiLn:      apiLn,
 		proxySrv:   &http.Server{Handler: proxyMux, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 60 * time.Second, IdleTimeout: 120 * time.Second},
@@ -104,6 +121,30 @@ func New(cfg Config) (*App, error) {
 		APIAddr:    apiLn.Addr().String(),
 	}
 	return a, nil
+}
+
+// approvalOptions enables transactional event recording only when
+// notifications are actually configured, so the default posture is exactly
+// what it was before this feature existed.
+func approvalOptions(notifyCfg *notify.Config) []approval.Option {
+	if notifyCfg == nil {
+		return nil
+	}
+	return []approval.Option{approval.WithNotifications()}
+}
+
+func apiOptions(notifyCfg *notify.Config) []api.Option {
+	if notifyCfg == nil {
+		return nil
+	}
+	return []api.Option{api.WithFailedNotifications(notifyCfg.MaxAttempts)}
+}
+
+func newDispatcher(store database.Store, notifyCfg *notify.Config) *notify.Dispatcher {
+	if notifyCfg == nil {
+		return nil
+	}
+	return notify.NewDispatcher(store, notify.NewWebhooks(notifyCfg.Webhooks), notifyCfg)
 }
 
 // Start launches the proxy and API listeners in background goroutines and
@@ -120,10 +161,28 @@ func (a *App) Start(_ context.Context) error {
 			slog.Error("api server exited", "error", err)
 		}
 	}()
+	a.startDispatcher()
 	return nil
 }
 
+// startDispatcher runs the notification dispatcher on a context of its own
+// rather than the caller's. The dispatcher's lifetime is the app's, and
+// tying it to a request or signal context would be one more way for
+// notification machinery to acquire influence over something it should not
+// have any.
+func (a *App) startDispatcher() {
+	if a.dispatcher == nil {
+		return
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	a.stopDispatcher = cancel
+	go a.dispatcher.Run(ctx)
+}
+
 func (a *App) Shutdown(ctx context.Context) error {
+	if a.stopDispatcher != nil {
+		a.stopDispatcher()
+	}
 	err1 := a.proxySrv.Shutdown(ctx)
 	err2 := a.apiSrv.Shutdown(ctx)
 	err3 := a.store.Close()

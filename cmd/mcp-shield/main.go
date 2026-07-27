@@ -40,11 +40,12 @@ func main() {
 
 func runDaemon() error {
 	cfg := app.Config{
-		DatabasePath: getenv("DATABASE_PATH", "data/mcp.db"),
-		ProxyAddr:    getenv("PROXY_ADDR", ":8080"),
-		APIAddr:      getenv("API_ADDR", ":8081"),
-		FailMode:     approval.FailMode(getenv("FAIL_MODE", string(approval.FailModeBlock))),
-		TemplatesDir: os.Getenv("TEMPLATES_DIR"),
+		DatabasePath:     getenv("DATABASE_PATH", "data/mcp.db"),
+		ProxyAddr:        getenv("PROXY_ADDR", ":8080"),
+		APIAddr:          getenv("API_ADDR", ":8081"),
+		FailMode:         approval.FailMode(getenv("FAIL_MODE", string(approval.FailModeBlock))),
+		TemplatesDir:     os.Getenv("TEMPLATES_DIR"),
+		NotifyConfigPath: getenv("NOTIFY_CONFIG_PATH", "config/notify.json"),
 	}
 
 	if raw := os.Getenv("UPSTREAM_TIMEOUT"); raw != "" {

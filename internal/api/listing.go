@@ -122,7 +122,7 @@ func (s *Server) handleAPIListManifestDecisions(w http.ResponseWriter, r *http.R
 	// Asked for explicitly so an unknown manifest is a 404 rather than an
 	// empty history, which reads as "nobody has decided yet".
 	if _, err := s.store.GetManifestByID(r.Context(), id); err != nil {
-		writeStoreError(w, err)
+		writeStoreError(w, namedManifestError(id, err))
 		return
 	}
 	s.writeDecisions(w, r, database.DecisionFilter{ManifestID: &id, Page: overfetch(page)}, page)
@@ -162,6 +162,14 @@ func (s *Server) resolveServerFilter(w http.ResponseWriter, r *http.Request) (*i
 func namedServerError(name string, err error) error {
 	if errors.Is(err, database.ErrNotFound) {
 		return fmt.Errorf("%w: no server named %q is registered", database.ErrNotFound, name)
+	}
+	return err
+}
+
+// namedManifestError does the same for a manifest id.
+func namedManifestError(id int64, err error) error {
+	if errors.Is(err, database.ErrNotFound) {
+		return fmt.Errorf("%w: no manifest with id %d", database.ErrNotFound, id)
 	}
 	return err
 }

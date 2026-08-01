@@ -138,3 +138,29 @@ func TestErrorEnvelopeKeepsTheReleasedErrorField(t *testing.T) {
 		t.Fatal(`"error" must still carry the human-readable message`)
 	}
 }
+
+// TestNotFoundMessagesNameWhatWasMissing: "database: not found" tells an
+// integrator nothing — not which parameter was wrong, not what to fix. Every
+// 404 must name the thing that was not there.
+func TestNotFoundMessagesNameWhatWasMissing(t *testing.T) {
+	s, _, _, _ := newTestServer(t)
+
+	cases := map[string]string{
+		"/api/manifests/9999":           "9999",
+		"/api/manifests/9999/diff":      "9999",
+		"/api/manifests/9999/decisions": "9999",
+		"/api/servers/no-such-server":   "no-such-server",
+	}
+	for path, want := range cases {
+		t.Run(path, func(t *testing.T) {
+			rr := httptest.NewRecorder()
+			s.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, path, nil))
+			if rr.Code != http.StatusNotFound {
+				t.Fatalf("status = %d, want 404", rr.Code)
+			}
+			if msg := decodeErrorBody(t, rr).Error; !strings.Contains(msg, want) {
+				t.Fatalf("message %q does not name the missing %q", msg, want)
+			}
+		})
+	}
+}

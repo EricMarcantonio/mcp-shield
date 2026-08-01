@@ -153,7 +153,7 @@ func (s *Server) handleAPIGetManifest(w http.ResponseWriter, r *http.Request) {
 	}
 	m, err := s.store.GetManifestByID(r.Context(), id)
 	if err != nil {
-		writeStoreError(w, err)
+		writeStoreError(w, namedManifestError(id, err))
 		return
 	}
 	v, err := toManifestView(r.Context(), s.store, m)
@@ -171,7 +171,7 @@ func (s *Server) handleAPIGetManifestDiff(w http.ResponseWriter, r *http.Request
 	}
 	m, err := s.store.GetManifestByID(r.Context(), id)
 	if err != nil {
-		writeStoreError(w, err)
+		writeStoreError(w, namedManifestError(id, err))
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")

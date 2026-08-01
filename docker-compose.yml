@@ -1,3 +1,5 @@
+name: mcp-shield
+
 services:
   gateway:
     # With both `image` and `build` set, `docker compose up`/`make docker-up`
@@ -11,20 +13,112 @@ services:
     image: ghcr.io/ericmarcantonio/mcp-shield:latest
     build: .
     ports:
-      - "8080:8080"
-      - "8081:8081"
+      - "8080:8080" # MCP proxy
+      - "8081:8081" # approval API + dashboard
     volumes:
-      - ./data:/data
-      - ./config:/config:ro
+      # The SQLite database, on a named volume rather than a host bind
+      # mount, and that is not a style preference.
+      #
+      # SQLite in WAL mode coordinates writers through a shared-memory file
+      # (-shm) and POSIX locks. Those do not work across a Docker Desktop
+      # bind mount on macOS or Windows: the host and the container run two
+      # different SQLite builds against one file with no working lock
+      # between them. Opening the bind-mounted database from the host —
+      # `sqlite3 data/mcp.db ...`, the obvious thing to do, and the only
+      # reason to bind-mount it in the first place — can zero the file
+      # header. Observed, not theorised: it destroyed this database once
+      # during development.
+      #
+      # This file is the approvals audit trail. It does not get to be the
+      # convenient one. To read it safely, see docs/api.md#inspecting-the-
+      # database.
+      - gateway-data:/data
+      # demo/ ships a working server + tool set so the stack gates something
+      # on first boot; edit demo/testserver-tools.json to trigger a change.
+      - ./demo:/config:ro
     environment:
       DATABASE_PATH: /data/mcp.db
       FAIL_MODE: block
       CONFIG_PATH: /config/servers.json
       PROXY_ADDR: ":8080"
       API_ADDR: ":8081"
+      # The admin UI's Vite dev server, allowed by default *in this local
+      # stack only* — the binary itself allows no origin unless told to.
+      #
+      # `-` and not `:-`: with `:-`, setting CORS_ALLOWED_ORIGINS= to the
+      # empty string would silently fall back to this default, so an
+      # operator could not turn CORS off. Unset takes the default; set-and-
+      # empty means no origin at all.
+      #
+      # Never set this to "*". The approval API is unauthenticated by
+      # design, so a wildcard lets any page a visitor opens approve
+      # capability changes on their gateway. The gateway refuses to start
+      # if you try. See docs/api.md#cors.
+      CORS_ALLOWED_ORIGINS: "${CORS_ALLOWED_ORIGINS-http://localhost:5173}"
     healthcheck:
+      # Exec form: the image is distroless and has no shell. `mcp-shield
+      # servers` exits non-zero unless the API answered, so this proves the
+      # listener is up and the database is readable, not merely that the
+      # process is alive.
       test: ["CMD", "/app/bin/mcp-shield", "servers"]
       interval: 10s
       timeout: 3s
       retries: 5
       start_period: 5s
+
+  # ---------------------------------------------------------------------
+  # Optional identity provider — `docker compose --profile auth up`
+  #
+  # Deliberately NOT wired into the gateway, and off unless the profile is
+  # named. mcp-shield does not do authentication: approve/reject take a
+  # caller-supplied `username`, and that is the seam a fronting application
+  # is meant to use. Keycloak is here so plugging a real IdP in front of the
+  # gateway is one flag away to experiment with — not so this project can
+  # imply it authenticates anybody.
+  # ---------------------------------------------------------------------
+  keycloak:
+    profiles: ["auth"]
+    image: quay.io/keycloak/keycloak:26.0
+    command: ["start-dev", "--http-port=8083"]
+    ports:
+      - "8083:8083"
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: admin
+      KC_HEALTH_ENABLED: "true"
+    # No healthcheck, and nothing depends_on this: nothing in the stack
+    # depends on Keycloak, because nothing is wired to it. A healthcheck
+    # here would suggest otherwise.
+
+  # ---------------------------------------------------------------------
+  # >>> FRONTEND SERVICE GOES HERE <<<
+  #
+  # Reserved for the React admin UI in web/admin/, owned by the frontend
+  # work. Nothing outside this block needs to change to add it: the gateway
+  # already allows http://localhost:5173 via CORS_ALLOWED_ORIGINS above.
+  #
+  # A starting point:
+  #
+  #   admin-ui:
+  #     build: ./web/admin
+  #     ports:
+  #       - "5173:5173"
+  #     environment:
+  #       # The gateway API as seen from the *browser*, not from inside the
+  #       # compose network: the UI runs in the user's browser on the host,
+  #       # so http://gateway:8081 would not resolve.
+  #       VITE_API_BASE: http://localhost:8081
+  #     depends_on:
+  #       gateway:
+  #         condition: service_healthy
+  #
+  # If the UI is served from any origin other than http://localhost:5173,
+  # set CORS_ALLOWED_ORIGINS on the gateway service to match — it is an
+  # exact-match allowlist, and "*" is refused at startup.
+  # ---------------------------------------------------------------------
+
+volumes:
+  # The approvals audit trail. Named rather than bind-mounted so SQLite's
+  # WAL locking works on a real Linux filesystem — see the note on the
+  # gateway service's volumes.
+  gateway-data:

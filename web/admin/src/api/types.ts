@@ -100,11 +100,25 @@ export interface FailedNotification {
 export interface ApprovalRecord {
   id: number;
   manifest_id: number;
+  manifest_hash: string;
+  server: string;
   decision: Decision;
   /** A caller-supplied attestation. The gateway does not verify it. */
   username: string;
   reason: string;
-  created_at: string;
+  /** When the decision was made — distinct from when its manifest was recorded. */
+  decided_at: string;
+}
+
+/** Every list route wraps its rows in this envelope. */
+export interface Paginated<T> {
+  items: T[];
+  pagination: {
+    limit: number;
+    offset: number;
+    count: number;
+    has_more: boolean;
+  };
 }
 
 export interface DecisionRequest {

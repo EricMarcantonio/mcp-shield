@@ -12,6 +12,7 @@
 
 import { apiBaseUrl } from '../lib/config';
 import type {
+  Paginated,
   ApprovalRecord,
   FailedNotification,
   Manifest,
@@ -210,9 +211,22 @@ export async function getHealth(): Promise<Health> {
 // named gap rather than as an empty result. They light up on their own when
 // the API grows the route; nothing else has to change.
 
-/** Decision history for one manifest. `null` = no such route on this gateway. */
+/**
+ * Decision history for one manifest: who decided, when, and why.
+ *
+ * The route is `decisions`, not `approvals` — a rejection is a decision too,
+ * and the record holds both. Still probed, so an older gateway degrades to a
+ * named gap rather than an error.
+ */
 export async function getManifestApprovals(id: number): Promise<ApprovalRecord[] | null> {
-  return optional<ApprovalRecord[]>(`/api/manifests/${id}/approvals`);
+  const page = await optional<Paginated<ApprovalRecord>>(`/api/manifests/${id}/decisions`);
+  return page ? page.items : null;
+}
+
+/** Recent decisions across every server, newest first. */
+export async function listDecisions(limit = 50): Promise<ApprovalRecord[] | null> {
+  const page = await optional<Paginated<ApprovalRecord>>(`/api/decisions?limit=${limit}`);
+  return page ? page.items : null;
 }
 
 /** The capability set a manifest covers. `null` = no such route. */
@@ -241,8 +255,8 @@ export interface ManifestIndex {
  * exists.
  */
 export async function listAllManifests(): Promise<ManifestIndex> {
-  const served = await optional<Manifest[]>('/api/manifests');
-  if (served) return { manifests: served, probed: false };
+  const served = await optional<Paginated<Manifest>>('/api/manifests?limit=200');
+  if (served) return { manifests: served.items, probed: false };
   return { manifests: await walkManifestIds(), probed: true };
 }
 

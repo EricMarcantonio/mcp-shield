@@ -84,7 +84,7 @@ export function DecisionLine({ record }: { record: ApprovalRecord }) {
         </span>
         <span className="text-sm text-slate/70">by</span>
         <span className="font-mono text-[0.8125rem] text-ink">{record.username}</span>
-        <span className="text-sm text-slate/60">{formatTimestamp(record.created_at)}</span>
+        <span className="text-sm text-slate/60">{formatTimestamp(record.decided_at)}</span>
       </div>
       {record.reason ? (
         <p className="mt-1.5 max-w-2xl text-sm leading-relaxed text-slate/85">{record.reason}</p>

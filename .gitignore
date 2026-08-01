@@ -13,3 +13,5 @@ config/notify.json
 .idea/
 graphify-out/
 .claude/worktrees/
+web/admin/node_modules/
+web/admin/dist/

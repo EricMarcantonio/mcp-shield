@@ -93,11 +93,15 @@ func (s *Server) routes(staticDir string) {
 	s.mux.HandleFunc("GET /healthz", s.handleHealthz)
 
 	s.mux.HandleFunc("GET /api/servers", s.handleAPIListServers)
+	s.mux.HandleFunc("GET /api/servers/{name}", s.handleAPIGetServer)
+	s.mux.HandleFunc("GET /api/manifests", s.handleAPIListManifests)
 	s.mux.HandleFunc("GET /api/manifests/pending", s.handleAPIListPending)
 	s.mux.HandleFunc("GET /api/manifests/{id}", s.handleAPIGetManifest)
 	s.mux.HandleFunc("GET /api/manifests/{id}/diff", s.handleAPIGetManifestDiff)
+	s.mux.HandleFunc("GET /api/manifests/{id}/decisions", s.handleAPIListManifestDecisions)
 	s.mux.HandleFunc("POST /api/manifests/{id}/approve", s.handleAPIApprove)
 	s.mux.HandleFunc("POST /api/manifests/{id}/reject", s.handleAPIReject)
+	s.mux.HandleFunc("GET /api/decisions", s.handleAPIListDecisions)
 	s.mux.HandleFunc("GET /api/notifications/failed", s.handleAPIFailedNotifications)
 
 	s.mux.HandleFunc("GET /", s.handleDashboardHome)

@@ -81,10 +81,17 @@ type Store interface {
 	GetManifestByID(ctx context.Context, id int64) (*ManifestRecord, error)
 	GetApprovedManifest(ctx context.Context, serverID int64) (*ManifestRecord, error)
 	ListPendingManifests(ctx context.Context) ([]ManifestRecord, error)
+	// ListManifests is the general listing: filtered by server, state, or
+	// hash, newest first, and always bounded by ManifestFilter.Page.
+	ListManifests(ctx context.Context, f ManifestFilter) ([]ManifestRecord, error)
 	UpdateManifestState(ctx context.Context, id int64, newState string) error
 
 	InsertApproval(ctx context.Context, a *Approval) (int64, error)
 	ListApprovalsForManifest(ctx context.Context, manifestID int64) ([]Approval, error)
+	// ListDecisions is the audit trail: who approved or rejected what, when,
+	// and why, across every server, each row joined to the manifest and
+	// server it concerns.
+	ListDecisions(ctx context.Context, f DecisionFilter) ([]Decision, error)
 
 	// Notification outbox. EnqueueNotification is deliberately a plain
 	// INSERT with no network or filesystem work of its own, so it can be
@@ -241,6 +248,10 @@ func (q queries) ListPendingManifests(ctx context.Context) ([]ManifestRecord, er
 	return listPendingManifests(ctx, q.e)
 }
 
+func (q queries) ListManifests(ctx context.Context, f ManifestFilter) ([]ManifestRecord, error) {
+	return listManifests(ctx, q.e, f)
+}
+
 func (q queries) UpdateManifestState(ctx context.Context, id int64, newState string) error {
 	return updateManifestState(ctx, q.e, id, newState)
 }
@@ -251,6 +262,10 @@ func (q queries) InsertApproval(ctx context.Context, a *Approval) (int64, error)
 
 func (q queries) ListApprovalsForManifest(ctx context.Context, manifestID int64) ([]Approval, error) {
 	return listApprovalsForManifest(ctx, q.e, manifestID)
+}
+
+func (q queries) ListDecisions(ctx context.Context, f DecisionFilter) ([]Decision, error) {
+	return listDecisions(ctx, q.e, f)
 }
 
 func (q queries) EnqueueNotification(ctx context.Context, eventType string, manifestID int64) (int64, error) {

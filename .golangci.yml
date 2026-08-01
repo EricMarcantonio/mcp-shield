@@ -39,6 +39,12 @@ linters:
         - name: exported
           disabled: true
   exclusions:
+    # web/admin is a React app, but npm packages occasionally ship Go source
+    # of their own (flatted vendors a Go port), and golangci-lint will
+    # happily lint a transitive JavaScript dependency and report findings
+    # nobody in this repo can act on.
+    paths:
+      - web/admin/node_modules
     rules:
       - path: _test\.go
         linters:

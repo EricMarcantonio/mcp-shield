@@ -70,6 +70,33 @@ type DecisionView struct {
 	DecidedAt    time.Time `json:"decided_at"`
 }
 
+// ServerSummaryView is one row of GET /api/servers.
+//
+// database.Server carries no JSON tags, so serialising it directly emitted Go
+// field names (ID, Name, CreatedAt) from this one route while every other
+// route in the API is snake_case -- including ServerDetailView immediately
+// below, describing the same entity. A client had to special-case a single
+// endpoint for no reason a caller could infer.
+type ServerSummaryView struct {
+	ID        int64     `json:"id"`
+	Name      string    `json:"name"`
+	Endpoint  string    `json:"endpoint"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+func toServerSummaryViews(servers []database.Server) []ServerSummaryView {
+	out := make([]ServerSummaryView, 0, len(servers))
+	for _, srv := range servers {
+		out = append(out, ServerSummaryView{
+			ID:        srv.ID,
+			Name:      srv.Name,
+			Endpoint:  srv.Endpoint,
+			CreatedAt: srv.CreatedAt,
+		})
+	}
+	return out
+}
+
 // ServerDetailView is GET /api/servers/{name}.
 type ServerDetailView struct {
 	ID        int64     `json:"id"`

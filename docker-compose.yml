@@ -91,31 +91,29 @@ services:
     # here would suggest otherwise.
 
   # ---------------------------------------------------------------------
-  # >>> FRONTEND SERVICE GOES HERE <<<
+  # Admin UI — http://localhost:8082
   #
-  # Reserved for the React admin UI in web/admin/, owned by the frontend
-  # work. Nothing outside this block needs to change to add it: the gateway
-  # already allows http://localhost:5173 via CORS_ALLOWED_ORIGINS above.
-  #
-  # A starting point:
-  #
-  #   admin-ui:
-  #     build: ./web/admin
-  #     ports:
-  #       - "5173:5173"
-  #     environment:
-  #       # The gateway API as seen from the *browser*, not from inside the
-  #       # compose network: the UI runs in the user's browser on the host,
-  #       # so http://gateway:8081 would not resolve.
-  #       VITE_API_BASE: http://localhost:8081
-  #     depends_on:
-  #       gateway:
-  #         condition: service_healthy
-  #
-  # If the UI is served from any origin other than http://localhost:5173,
-  # set CORS_ALLOWED_ORIGINS on the gateway service to match — it is an
-  # exact-match allowlist, and "*" is refused at startup.
+  # nginx serves the built SPA and proxies /api and /healthz to the gateway,
+  # so the browser only ever talks to one origin. That is why this service
+  # needs no CORS entry: there is no cross-origin request to permit.
+  # CORS_ALLOWED_ORIGINS on the gateway stays set for the Vite dev server on
+  # :5173, which does talk cross-origin.
   # ---------------------------------------------------------------------
+  admin:
+    build: ./web/admin
+    ports:
+      - "8082:80"
+    environment:
+      # Reached over the compose network, not from the browser: nginx makes
+      # this request, so the service name resolves.
+      API_PROXY_PASS: http://gateway:8081
+      # The name decisions are recorded under. The gateway does not verify
+      # it — it is an attestation the caller supplies, which is exactly the
+      # seam an identity provider would fill later.
+      OPERATOR_NAME: ops
+    depends_on:
+      gateway:
+        condition: service_healthy
 
 volumes:
   # The approvals audit trail. Named rather than bind-mounted so SQLite's

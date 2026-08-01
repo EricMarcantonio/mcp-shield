@@ -124,7 +124,7 @@ func (s *Server) handleAPIListServers(w http.ResponseWriter, r *http.Request) {
 		writeStoreError(w, err)
 		return
 	}
-	writeJSON(w, servers)
+	writeJSON(w, toServerSummaryViews(servers))
 }
 
 func (s *Server) handleAPIListPending(w http.ResponseWriter, r *http.Request) {

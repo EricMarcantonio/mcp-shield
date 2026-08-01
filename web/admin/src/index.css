@@ -1,0 +1,63 @@
+/* Fonts are vendored through @fontsource and bundled with the app. Nothing
+   here reaches out to a font CDN: this console is meant to run on a closed
+   network in front of a security gateway. */
+@import '@fontsource/ibm-plex-sans/latin-400.css';
+@import '@fontsource/ibm-plex-sans/latin-500.css';
+@import '@fontsource/ibm-plex-sans/latin-600.css';
+@import '@fontsource/ibm-plex-sans-condensed/latin-600.css';
+@import '@fontsource/ibm-plex-mono/latin-400.css';
+@import '@fontsource/ibm-plex-mono/latin-500.css';
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html {
+    -webkit-text-size-adjust: 100%;
+  }
+
+  body {
+    @apply bg-paper font-sans text-ink antialiased;
+  }
+
+  /* Focus must be visible on a page this pale, and it must not be the only
+     signal a control carries. */
+  :focus-visible {
+    @apply outline-none ring-2 ring-signal ring-offset-2 ring-offset-paper;
+  }
+
+  ::selection {
+    background-color: #069eb933;
+  }
+}
+
+@layer components {
+  /* The seam: the vertical rule the whole product is organised around. Left
+     of it is the approved baseline, right of it is what the upstream is
+     advertising now. */
+  .seam-rule {
+    @apply bg-rule;
+  }
+
+  .card {
+    @apply rounded-sm border border-rule bg-white;
+  }
+
+  .label {
+    @apply font-display text-micro uppercase tracking-[0.14em] text-slate/60;
+  }
+}
+
+/* One orchestrated motion, and it is switched off for anyone who asked for
+   less. Everything else in the product is still by design. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 1ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 1ms !important;
+    scroll-behavior: auto !important;
+  }
+}

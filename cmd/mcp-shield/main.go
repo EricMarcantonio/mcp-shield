@@ -16,6 +16,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/EricMarcantonio/mcp-shield/internal/api"
 	"github.com/EricMarcantonio/mcp-shield/internal/app"
 	"github.com/EricMarcantonio/mcp-shield/internal/approval"
 	"github.com/EricMarcantonio/mcp-shield/internal/mcp"
@@ -66,6 +67,11 @@ func runDaemon() error {
 		FailMode:         approval.FailMode(getenv("FAIL_MODE", string(approval.FailModeBlock))),
 		TemplatesDir:     os.Getenv("TEMPLATES_DIR"),
 		NotifyConfigPath: getenv("NOTIFY_CONFIG_PATH", "config/notify.json"),
+
+		// Unset means no browser origin may call this API, which is the
+		// only safe default for an unauthenticated control plane. See
+		// docs/api.md for what turning this on actually permits.
+		CORSAllowedOrigins: api.ParseOriginList(os.Getenv("CORS_ALLOWED_ORIGINS")),
 	}
 
 	if raw := os.Getenv("UPSTREAM_TIMEOUT"); raw != "" {

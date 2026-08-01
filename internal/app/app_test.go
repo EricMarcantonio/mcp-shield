@@ -231,3 +231,37 @@ func getAPI(t *testing.T, a *App, path string) int {
 	defer func() { _ = resp.Body.Close() }()
 	return resp.StatusCode
 }
+
+// TestNewRefusesAWildcardCORSOrigin makes the misconfiguration fatal at
+// startup rather than silently permissive at runtime. A gateway that boots
+// with "*" would be a gateway whose unauthenticated approve endpoint any
+// page on the internet can reach.
+func TestNewRefusesAWildcardCORSOrigin(t *testing.T) {
+	cfg := Config{
+		DatabasePath:       filepath.Join(t.TempDir(), "test.db"),
+		ProxyAddr:          "127.0.0.1:0",
+		APIAddr:            "127.0.0.1:0",
+		CORSAllowedOrigins: []string{"*"},
+	}
+	a, err := New(cfg)
+	if err == nil {
+		_ = a.Shutdown(context.Background())
+		t.Fatal("New accepted a wildcard CORS origin; it must refuse to start")
+	}
+}
+
+// TestNewAcceptsExplicitCORSOrigins is the other half: a named origin is a
+// deliberate deployment decision and must work.
+func TestNewAcceptsExplicitCORSOrigins(t *testing.T) {
+	cfg := Config{
+		DatabasePath:       filepath.Join(t.TempDir(), "test.db"),
+		ProxyAddr:          "127.0.0.1:0",
+		APIAddr:            "127.0.0.1:0",
+		CORSAllowedOrigins: []string{"http://localhost:5173"},
+	}
+	a, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New with an explicit CORS origin: %v", err)
+	}
+	t.Cleanup(func() { _ = a.Shutdown(context.Background()) })
+}

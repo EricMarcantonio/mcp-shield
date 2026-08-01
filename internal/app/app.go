@@ -36,6 +36,11 @@ type Config struct {
 	// NotifyConfigPath points at the notification config. A missing file
 	// disables notifications, which is the default.
 	NotifyConfigPath string
+
+	// CORSAllowedOrigins names the browser origins allowed to call the API.
+	// Empty — the default — serves no cross-origin request at all. A "*"
+	// entry is refused by New rather than honoured; see internal/api/cors.go.
+	CORSAllowedOrigins []string
 }
 
 type App struct {
@@ -73,6 +78,13 @@ func New(cfg Config) (*App, error) {
 		return nil, fmt.Errorf("app: load notification config: %w", err)
 	}
 
+	// Validated before anything is opened or bound: a gateway must never
+	// come up with a CORS allowlist its operator did not mean.
+	corsPolicy, err := api.NewCORSPolicy(cfg.CORSAllowedOrigins)
+	if err != nil {
+		return nil, fmt.Errorf("app: %w", err)
+	}
+
 	store, err := database.Open(cfg.DatabasePath)
 	if err != nil {
 		return nil, fmt.Errorf("app: open database: %w", err)
@@ -106,7 +118,7 @@ func New(cfg Config) (*App, error) {
 	proxyMux := http.NewServeMux()
 	proxyMux.Handle("/mcp/", downstream)
 
-	apiHandler := api.NewServer(store, workflow, cfg.TemplatesDir, apiOptions(notifyCfg)...)
+	apiHandler := api.NewServer(store, workflow, cfg.TemplatesDir, apiOptions(notifyCfg, corsPolicy)...)
 
 	a := &App{
 		store:      store,
@@ -133,11 +145,12 @@ func approvalOptions(notifyCfg *notify.Config) []approval.Option {
 	return []approval.Option{approval.WithNotifications()}
 }
 
-func apiOptions(notifyCfg *notify.Config) []api.Option {
-	if notifyCfg == nil {
-		return nil
+func apiOptions(notifyCfg *notify.Config, corsPolicy *api.CORSPolicy) []api.Option {
+	opts := []api.Option{api.WithCORS(corsPolicy)}
+	if notifyCfg != nil {
+		opts = append(opts, api.WithFailedNotifications(notifyCfg.MaxAttempts))
 	}
-	return []api.Option{api.WithFailedNotifications(notifyCfg.MaxAttempts)}
+	return opts
 }
 
 func newDispatcher(store database.Store, notifyCfg *notify.Config) *notify.Dispatcher {

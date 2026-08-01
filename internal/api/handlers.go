@@ -28,16 +28,28 @@ type Server struct {
 	store    database.Store
 	workflow *approval.Workflow
 	mux      *http.ServeMux
+	handler  http.Handler       // mux wrapped in the CORS policy
 	tmpl     *template.Template // nil if templates failed to load; dashboard routes 503 in that case
 
 	// notifyMaxAttempts is the attempt count at which the dispatcher gives
 	// up, and therefore the threshold for "permanently failed". Zero means
 	// notifications are disabled and the failed-notifications route 404s.
 	notifyMaxAttempts int
+
+	// cors is never nil: an unconfigured server holds a policy that allows
+	// no origin at all, which is the default posture.
+	cors *CORSPolicy
 }
 
 // Option adjusts optional server behaviour.
 type Option func(*Server)
+
+// WithCORS lets the named browser origins call this API. Without it no
+// cross-origin request is served and every preflight is refused — see the
+// note at the top of cors.go for why that is the default rather than "*".
+func WithCORS(policy *CORSPolicy) Option {
+	return func(s *Server) { s.cors = policy }
+}
 
 // WithFailedNotifications enables GET /api/notifications/failed, reporting
 // events that reached maxAttempts without being delivered. Without it the
@@ -56,7 +68,7 @@ func NewServer(store database.Store, workflow *approval.Workflow, templatesDir s
 		templatesDir = DefaultTemplatesDir
 	}
 
-	s := &Server{store: store, workflow: workflow, mux: http.NewServeMux()}
+	s := &Server{store: store, workflow: workflow, mux: http.NewServeMux(), cors: &CORSPolicy{}}
 	for _, opt := range opts {
 		opt(s)
 	}
@@ -70,21 +82,26 @@ func NewServer(store database.Store, workflow *approval.Workflow, templatesDir s
 
 	staticDir := filepath.Join(filepath.Dir(templatesDir), "static")
 	s.routes(staticDir)
+	s.handler = s.cors.wrap(s.mux)
 	return s
 }
 
-func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) { s.mux.ServeHTTP(w, r) }
+func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) { s.handler.ServeHTTP(w, r) }
 
 func (s *Server) routes(staticDir string) {
 	s.mux.Handle("GET /static/", http.StripPrefix("/static/", http.FileServer(http.Dir(staticDir))))
 	s.mux.HandleFunc("GET /healthz", s.handleHealthz)
 
 	s.mux.HandleFunc("GET /api/servers", s.handleAPIListServers)
+	s.mux.HandleFunc("GET /api/servers/{name}", s.handleAPIGetServer)
+	s.mux.HandleFunc("GET /api/manifests", s.handleAPIListManifests)
 	s.mux.HandleFunc("GET /api/manifests/pending", s.handleAPIListPending)
 	s.mux.HandleFunc("GET /api/manifests/{id}", s.handleAPIGetManifest)
 	s.mux.HandleFunc("GET /api/manifests/{id}/diff", s.handleAPIGetManifestDiff)
+	s.mux.HandleFunc("GET /api/manifests/{id}/decisions", s.handleAPIListManifestDecisions)
 	s.mux.HandleFunc("POST /api/manifests/{id}/approve", s.handleAPIApprove)
 	s.mux.HandleFunc("POST /api/manifests/{id}/reject", s.handleAPIReject)
+	s.mux.HandleFunc("GET /api/decisions", s.handleAPIListDecisions)
 	s.mux.HandleFunc("GET /api/notifications/failed", s.handleAPIFailedNotifications)
 
 	s.mux.HandleFunc("GET /", s.handleDashboardHome)
@@ -104,29 +121,29 @@ func (s *Server) handleHealthz(w http.ResponseWriter, _ *http.Request) {
 func (s *Server) handleAPIListServers(w http.ResponseWriter, r *http.Request) {
 	servers, err := s.store.ListServers(r.Context())
 	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, err)
+		writeStoreError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, servers)
+	writeJSON(w, servers)
 }
 
 func (s *Server) handleAPIListPending(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	pending, err := s.store.ListPendingManifests(ctx)
 	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, err)
+		writeStoreError(w, err)
 		return
 	}
 	views := make([]PendingManifestView, 0, len(pending))
 	for _, m := range pending {
 		v, err := toPendingView(ctx, s.store, m)
 		if err != nil {
-			writeJSONError(w, http.StatusInternalServerError, err)
+			writeStoreError(w, err)
 			return
 		}
 		views = append(views, v)
 	}
-	writeJSON(w, http.StatusOK, views)
+	writeJSON(w, views)
 }
 
 func (s *Server) handleAPIGetManifest(w http.ResponseWriter, r *http.Request) {
@@ -136,15 +153,15 @@ func (s *Server) handleAPIGetManifest(w http.ResponseWriter, r *http.Request) {
 	}
 	m, err := s.store.GetManifestByID(r.Context(), id)
 	if err != nil {
-		writeJSONNotFoundOr500(w, err)
+		writeStoreError(w, namedManifestError(id, err))
 		return
 	}
 	v, err := toManifestView(r.Context(), s.store, m)
 	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, err)
+		writeStoreError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, v)
+	writeJSON(w, v)
 }
 
 func (s *Server) handleAPIGetManifestDiff(w http.ResponseWriter, r *http.Request) {
@@ -154,7 +171,7 @@ func (s *Server) handleAPIGetManifestDiff(w http.ResponseWriter, r *http.Request
 	}
 	m, err := s.store.GetManifestByID(r.Context(), id)
 	if err != nil {
-		writeJSONNotFoundOr500(w, err)
+		writeStoreError(w, namedManifestError(id, err))
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -171,25 +188,26 @@ func (s *Server) handleAPIGetManifestDiff(w http.ResponseWriter, r *http.Request
 // instead of disappearing.
 func (s *Server) handleAPIFailedNotifications(w http.ResponseWriter, r *http.Request) {
 	if s.notifyMaxAttempts == 0 {
-		writeJSONError(w, http.StatusNotFound, errors.New("notifications are not configured"))
+		writeAPIError(w, http.StatusNotFound, CodeNotConfigured,
+			errors.New("notifications are not configured on this gateway"))
 		return
 	}
 	ctx := r.Context()
 	rows, err := s.store.ListUndeliveredNotifications(ctx, s.notifyMaxAttempts)
 	if err != nil {
-		writeJSONError(w, http.StatusInternalServerError, err)
+		writeStoreError(w, err)
 		return
 	}
 	views := make([]FailedNotificationView, 0, len(rows))
 	for _, row := range rows {
 		v, err := toFailedNotificationView(ctx, s.store, row)
 		if err != nil {
-			writeJSONError(w, http.StatusInternalServerError, err)
+			writeStoreError(w, err)
 			return
 		}
 		views = append(views, v)
 	}
-	writeJSON(w, http.StatusOK, views)
+	writeJSON(w, views)
 }
 
 type decisionRequest struct {
@@ -212,19 +230,19 @@ func (s *Server) handleDecision(w http.ResponseWriter, r *http.Request, decide f
 	}
 	var body decisionRequest
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		writeJSONError(w, http.StatusBadRequest, fmt.Errorf("invalid JSON body: %w", err))
+		writeAPIError(w, http.StatusBadRequest, CodeInvalidJSON, fmt.Errorf("invalid JSON body: %w", err))
 		return
 	}
 	username, err := attributableUsername(body.Username)
 	if err != nil {
-		writeJSONError(w, http.StatusBadRequest, err)
+		writeAPIError(w, http.StatusBadRequest, CodeUsernameRequired, err)
 		return
 	}
 	if err := decide(r.Context(), id, username, body.Reason); err != nil {
-		writeJSONNotFoundOr500(w, err)
+		writeStoreError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"id": id, "ok": true})
+	writeJSON(w, map[string]any{"id": id, "ok": true})
 }
 
 // attributableUsername rejects a decision the gateway cannot attribute.
@@ -253,36 +271,17 @@ func attributableUsername(raw string) (string, error) {
 func parseID(w http.ResponseWriter, r *http.Request) (int64, bool) {
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
-		writeJSONError(w, http.StatusBadRequest, err)
+		writeAPIError(w, http.StatusBadRequest, CodeInvalidRequest,
+			fmt.Errorf("manifest id %q is not a number", r.PathValue("id")))
 		return 0, false
 	}
 	return id, true
 }
 
-func writeJSON(w http.ResponseWriter, status int, v any) {
+// writeJSON writes a successful response. Failures never come through here
+// — they go to writeAPIError, which is what owns the status and the code.
+func writeJSON(w http.ResponseWriter, v any) {
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
+	w.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(w).Encode(v)
-}
-
-func writeJSONError(w http.ResponseWriter, status int, err error) {
-	writeJSON(w, status, map[string]string{"error": err.Error()})
-}
-
-func writeJSONNotFoundOr500(w http.ResponseWriter, err error) {
-	writeJSONError(w, statusForStoreError(err), err)
-}
-
-// statusForStoreError maps the errors the store and approval workflow return
-// onto HTTP statuses. It is shared by the JSON API and the dashboard so the
-// same failure never reports differently depending on which surface asked.
-func statusForStoreError(err error) int {
-	switch {
-	case errors.Is(err, database.ErrNotFound):
-		return http.StatusNotFound
-	case errors.Is(err, approval.ErrNotPending):
-		return http.StatusConflict
-	default:
-		return http.StatusInternalServerError
-	}
 }

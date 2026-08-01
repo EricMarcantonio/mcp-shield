@@ -1,0 +1,8 @@
+[
+  {
+    "name": "calendar",
+    "command": "/app/bin/mcp-shield-testserver",
+    "args": [],
+    "env": ["TOOLS_FILE=/config/testserver-tools.json"]
+  }
+]

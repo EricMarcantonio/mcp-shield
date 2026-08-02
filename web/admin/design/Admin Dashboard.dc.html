@@ -1,0 +1,278 @@
+<!--
+  Design source of record for the admin UI.
+
+  Exported from the Claude Design project "MCP-Shield Admin Dashboard"
+  (ff872fac-24fc-4834-be29-d02a3cdc24b7, file "Admin Dashboard.dc.html").
+  Kept in the repo so the React implementation in ../src has something exact to
+  be checked against, rather than a description of itself.
+
+  This file does not run as part of the app. It is a `.dc.html` document for
+  Claude Design's own preview runtime: `<sc-if>` / `<sc-for>` are its control
+  flow, `{{ … }}` binds to the `renderVals()` at the bottom, and the state in
+  `Component` is illustrative sample data, not a fixture the app should use.
+  The React implementation binds the same structure to the gateway's real API.
+-->
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="_ds/organic-7ff91966-a60d-4cf4-8a3c-c5eb465a91ef/styles.css">
+  <script src="_ds/organic-7ff91966-a60d-4cf4-8a3c-c5eb465a91ef/_ds_bundle.js"></script>
+  <style>
+    body { margin: 0; }
+    ::selection { background: var(--color-accent-200); }
+  </style>
+</helmet>
+
+<div style="min-height:100vh; display:flex; background:var(--color-bg); color:var(--color-text); font-family:var(--font-body);">
+
+  <aside style="width:248px; flex-shrink:0; padding:var(--space-6) var(--space-6); display:flex; flex-direction:column; gap:var(--space-6); border-right:1px solid var(--color-neutral-200); position:sticky; top:0; height:100vh;">
+    <div>
+      <div style="font-family:var(--font-heading); font-size:22px; color:var(--color-accent-700); line-height:1;">mcp-shield</div>
+      <div style="font-size:13px; color:var(--color-neutral-700); margin-top:6px;">Approval dashboard</div>
+    </div>
+
+    <nav style="display:flex; flex-direction:column; gap:var(--space-2);">
+      <div onClick="{{ goPending }}" style="{{ tabStylePending }}">
+        <span>Pending</span>
+        <sc-if value="{{ pendingCount }}" hint-placeholder-val="{{ true }}">
+          <span class="tag tag-accent" style="margin-left:auto;">{{ pendingCount }}</span>
+        </sc-if>
+      </div>
+      <div onClick="{{ goServers }}" style="{{ tabStyleServers }}">
+        <span>Servers</span>
+      </div>
+      <div onClick="{{ goHistory }}" style="{{ tabStyleHistory }}">
+        <span>History</span>
+      </div>
+      <div onClick="{{ goNotifications }}" style="{{ tabStyleNotifications }}">
+        <span>Notifications</span>
+        <sc-if value="{{ failedCount }}" hint-placeholder-val="{{ true }}">
+          <span class="tag tag-outline" style="margin-left:auto;">{{ failedCount }}</span>
+        </sc-if>
+      </div>
+    </nav>
+
+    <div style="margin-top:auto; padding-top:var(--space-4); border-top:1px solid var(--color-neutral-200); display:flex; flex-direction:column; gap:var(--space-2);">
+      <div style="font-size:12px; color:var(--color-neutral-700); text-transform:uppercase; letter-spacing:.04em;">Gate mode</div>
+      <span class="{{ failModeTagClass }}" style="width:fit-content;">{{ failModeLabel }}</span>
+    </div>
+  </aside>
+
+  <main style="flex:1; padding:var(--space-8); max-width:1000px; display:flex; flex-direction:column; gap:var(--space-6); overflow-y:auto;">
+
+    <sc-if value="{{ isWarnMode }}" hint-placeholder-val="{{ false }}">
+      <div class="card elev-sm" style="border:1px solid var(--color-accent-2-300); background:var(--color-accent-2-100); padding:var(--space-4) var(--space-6); display:flex; align-items:center; gap:var(--space-3);">
+        <span class="tag tag-accent-2">Warn mode</span>
+        <span style="font-size:14px; color:var(--color-accent-2-900);">FAIL_MODE=warn — the gate is observing only. Nothing is being blocked. Not recommended for production.</span>
+      </div>
+    </sc-if>
+
+    <!-- PENDING -->
+    <sc-if value="{{ isPending }}" hint-placeholder-val="{{ true }}">
+      <div style="display:flex; flex-direction:column; gap:var(--space-6);">
+        <div style="display:flex; align-items:baseline; gap:var(--space-3);">
+          <h1 style="font-family:var(--font-heading); font-size:28px; margin:0; color:var(--color-text);">Pending approvals</h1>
+          <span style="font-size:14px; color:var(--color-neutral-700);">New or changed tools waiting for review</span>
+        </div>
+
+        <sc-if value="{{ noPending }}" hint-placeholder-val="{{ false }}">
+          <div class="card" style="text-align:center; padding:var(--space-8);">
+            <div style="font-family:var(--font-heading); font-size:20px; margin-bottom:var(--space-2);">All caught up</div>
+            <div style="font-size:14px; color:var(--color-neutral-700);">No manifests are waiting for review. New or changed capabilities will show up here.</div>
+          </div>
+        </sc-if>
+
+        <sc-for list="{{ pendingView }}" as="m" hint-placeholder-count="2">
+          <div class="card elev-sm" style="padding:var(--space-6); display:flex; flex-direction:column; gap:var(--space-4);">
+            <div style="display:flex; align-items:flex-start; justify-content:space-between; gap:var(--space-4);">
+              <div>
+                <div class="card-kicker">{{ m.server }} · {{ m.currentVersion }}</div>
+                <div class="card-title">{{ m.riskLabel }}</div>
+                <div style="font-size:13px; color:var(--color-neutral-700); margin-top:4px;">Submitted {{ m.submittedAt }}</div>
+              </div>
+              <div style="display:flex; gap:var(--space-2); flex-shrink:0;">
+                <button class="btn btn-ghost" onClick="{{ m.toggleExpand }}">{{ m.expandLabel }}</button>
+                <button class="btn btn-secondary" onClick="{{ m.reject }}">Reject</button>
+                <button class="btn btn-primary" onClick="{{ m.approve }}">Approve</button>
+              </div>
+            </div>
+
+            <div style="display:flex; gap:var(--space-2); flex-wrap:wrap; align-items:center;">
+              <sc-for list="{{ m.changedTools }}" as="t" hint-placeholder-count="3">
+                <span class="{{ t.tagClass }}">{{ t.name }}</span>
+              </sc-for>
+              <sc-if value="{{ m.hasUnchanged }}" hint-placeholder-val="{{ false }}">
+                <span class="tag tag-neutral">+{{ m.unchangedCount }} unchanged</span>
+              </sc-if>
+            </div>
+
+            <sc-if value="{{ m.isExpanded }}" hint-placeholder-val="{{ false }}">
+              <div style="border-top:1px solid var(--color-neutral-200); padding-top:var(--space-3); display:flex; flex-direction:column; gap:var(--space-2);">
+                <sc-for list="{{ m.changedTools }}" as="t" hint-placeholder-count="3">
+                  <div style="background:var(--color-neutral-100); border-radius:var(--radius-md); padding:var(--space-3);">
+                    <div onClick="{{ t.toggle }}" style="display:flex; align-items:center; gap:var(--space-3); cursor:pointer;">
+                      <span class="{{ t.tagClass }}">{{ t.statusLabel }}</span>
+                      <span style="font-family:var(--font-heading); font-size:15px;">{{ t.name }}</span>
+                      <span style="margin-left:auto; font-size:13px; color:var(--color-accent-700);">{{ t.detailLabel }}</span>
+                    </div>
+                    <sc-if value="{{ t.isToolExpanded }}" hint-placeholder-val="{{ false }}">
+                      <div style="margin-top:var(--space-2); font-size:13px; color:var(--color-neutral-700); display:flex; flex-direction:column; gap:4px;">
+                        <div>{{ t.description }}</div>
+                        <div style="font-family:monospace; background:var(--color-bg); border-radius:var(--radius-sm); padding:6px 10px; width:fit-content;">{{ t.params }}</div>
+                      </div>
+                    </sc-if>
+                  </div>
+                </sc-for>
+
+                <sc-if value="{{ m.hasUnchanged }}" hint-placeholder-val="{{ false }}">
+                  <button class="btn btn-ghost" style="width:fit-content;" onClick="{{ m.toggleUnchanged }}">{{ m.unchangedToggleLabel }}</button>
+                </sc-if>
+
+                <sc-if value="{{ m.showUnchanged }}" hint-placeholder-val="{{ false }}">
+                  <sc-for list="{{ m.unchangedTools }}" as="t" hint-placeholder-count="1">
+                    <div style="background:var(--color-neutral-100); border-radius:var(--radius-md); padding:var(--space-3);">
+                      <div onClick="{{ t.toggle }}" style="display:flex; align-items:center; gap:var(--space-3); cursor:pointer;">
+                        <span class="{{ t.tagClass }}">{{ t.statusLabel }}</span>
+                        <span style="font-family:var(--font-heading); font-size:15px;">{{ t.name }}</span>
+                        <span style="margin-left:auto; font-size:13px; color:var(--color-accent-700);">{{ t.detailLabel }}</span>
+                      </div>
+                      <sc-if value="{{ t.isToolExpanded }}" hint-placeholder-val="{{ false }}">
+                        <div style="margin-top:var(--space-2); font-size:13px; color:var(--color-neutral-700); display:flex; flex-direction:column; gap:4px;">
+                          <div>{{ t.description }}</div>
+                          <div style="font-family:monospace; background:var(--color-bg); border-radius:var(--radius-sm); padding:6px 10px; width:fit-content;">{{ t.params }}</div>
+                        </div>
+                      </sc-if>
+                    </div>
+                  </sc-for>
+                </sc-if>
+              </div>
+            </sc-if>
+          </div>
+        </sc-for>
+      </div>
+    </sc-if>
+
+    <!-- SERVERS -->
+    <sc-if value="{{ isServers }}" hint-placeholder-val="{{ false }}">
+      <div style="display:flex; flex-direction:column; gap:var(--space-6);">
+        <h1 style="font-family:var(--font-heading); font-size:28px; margin:0;">Servers</h1>
+
+        <sc-if value="{{ noServers }}" hint-placeholder-val="{{ false }}">
+          <div class="card" style="text-align:center; padding:var(--space-8);">
+            <div style="font-family:var(--font-heading); font-size:20px; margin-bottom:var(--space-2);">No servers configured</div>
+            <div style="font-size:14px; color:var(--color-neutral-700);">Add an entry to <code>config/servers.json</code> and connect a client to see it here.</div>
+          </div>
+        </sc-if>
+
+        <sc-if value="{{ hasServers }}" hint-placeholder-val="{{ true }}">
+          <table class="table">
+            <thead>
+              <tr><th>Server</th><th>Status</th><th>Tools</th><th>Manifest hash</th><th>Last action</th></tr>
+            </thead>
+            <tbody>
+              <sc-for list="{{ serversView }}" as="s" hint-placeholder-count="2">
+                <tr>
+                  <td style="font-family:var(--font-heading);">{{ s.name }}</td>
+                  <td><span class="{{ s.statusTagClass }}">{{ s.statusLabel }}</span></td>
+                  <td>{{ s.toolCount }}</td>
+                  <td style="font-family:monospace; font-size:13px;">{{ s.hash }}</td>
+                  <td style="font-size:13px; color:var(--color-neutral-700);">{{ s.lastAction }}</td>
+                </tr>
+              </sc-for>
+            </tbody>
+          </table>
+        </sc-if>
+      </div>
+    </sc-if>
+
+    <!-- HISTORY -->
+    <sc-if value="{{ isHistory }}" hint-placeholder-val="{{ false }}">
+      <div style="display:flex; flex-direction:column; gap:var(--space-6);">
+        <h1 style="font-family:var(--font-heading); font-size:28px; margin:0;">Approval history</h1>
+
+        <sc-if value="{{ noHistory }}" hint-placeholder-val="{{ false }}">
+          <div class="card" style="text-align:center; padding:var(--space-8);">
+            <div style="font-family:var(--font-heading); font-size:20px; margin-bottom:var(--space-2);">No decisions yet</div>
+            <div style="font-size:14px; color:var(--color-neutral-700);">Approved and rejected manifests will be logged here.</div>
+          </div>
+        </sc-if>
+
+        <sc-if value="{{ hasHistory }}" hint-placeholder-val="{{ true }}">
+          <table class="table">
+            <thead>
+              <tr><th>Server</th><th>Tool</th><th>Decision</th><th>Reason</th><th>By</th><th>When</th></tr>
+            </thead>
+            <tbody>
+              <sc-for list="{{ historyView }}" as="h" hint-placeholder-count="3">
+                <tr>
+                  <td>{{ h.server }}</td>
+                  <td style="font-family:monospace; font-size:13px;">{{ h.tool }}</td>
+                  <td><span class="{{ h.actionTagClass }}">{{ h.actionLabel }}</span></td>
+                  <td style="font-size:13px; color:var(--color-neutral-700);">{{ h.reason }}</td>
+                  <td>{{ h.by }}</td>
+                  <td style="font-size:13px; color:var(--color-neutral-700);">{{ h.at }}</td>
+                </tr>
+              </sc-for>
+            </tbody>
+          </table>
+        </sc-if>
+      </div>
+    </sc-if>
+
+    <!-- NOTIFICATIONS -->
+    <sc-if value="{{ isNotifications }}" hint-placeholder-val="{{ false }}">
+      <div style="display:flex; flex-direction:column; gap:var(--space-6);">
+        <h1 style="font-family:var(--font-heading); font-size:28px; margin:0;">Notifications</h1>
+
+        <div class="card elev-sm" style="padding:var(--space-6); display:flex; flex-direction:column; gap:var(--space-3);">
+          <div class="card-kicker">Webhook</div>
+          <div style="display:flex; align-items:center; gap:var(--space-3);">
+            <span class="tag tag-accent-2">Slack</span>
+            <span style="font-family:monospace; font-size:13px; color:var(--color-neutral-700);">https://hooks.slack.com/services/T000/B000/••••</span>
+          </div>
+          <div style="font-size:13px; color:var(--color-neutral-700);">Fires an HMAC-signed event on every new pending manifest. Configured via <code>config/notify.json</code>.</div>
+        </div>
+
+        <div>
+          <div class="card-kicker" style="margin-bottom:var(--space-2);">Failed deliveries</div>
+          <sc-if value="{{ noFailed }}" hint-placeholder-val="{{ false }}">
+            <div class="card" style="text-align:center; padding:var(--space-8);">
+              <div style="font-family:var(--font-heading); font-size:20px; margin-bottom:var(--space-2);">Nothing failed</div>
+              <div style="font-size:14px; color:var(--color-neutral-700);">Every notification has been delivered.</div>
+            </div>
+          </sc-if>
+          <sc-if value="{{ hasFailed }}" hint-placeholder-val="{{ true }}">
+            <table class="table">
+              <thead>
+                <tr><th>Target</th><th>Event</th><th>Attempts</th><th>Last error</th><th>Last tried</th></tr>
+              </thead>
+              <tbody>
+                <sc-for list="{{ failedView }}" as="f" hint-placeholder-count="1">
+                  <tr>
+                    <td style="font-family:monospace; font-size:13px;">{{ f.target }}</td>
+                    <td>{{ f.event }}</td>
+                    <td><span class="tag tag-outline">{{ f.attempts }}</span></td>
+                    <td style="font-size:13px; color:var(--color-neutral-700);">{{ f.lastError }}</td>
+                    <td style="font-size:13px; color:var(--color-neutral-700);">{{ f.lastTried }}</td>
+                  </tr>
+                </sc-for>
+              </tbody>
+            </table>
+          </sc-if>
+        </div>
+      </div>
+    </sc-if>
+
+  </main>
+</div>
+
+</x-dc>
+</body>
+</html>

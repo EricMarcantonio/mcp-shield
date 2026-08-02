@@ -1,27 +1,33 @@
 /**
  * Turning what the API returns into what an administrator has to decide with.
  *
- * Two jobs live here:
+ * Three jobs live here:
  *
  *  1. Ranking a diff. The gateway reports "changed" as three booleans; a
  *     changed input schema and a changed sentence of prose are not the same
  *     event, and the console must not flatten them into one list.
- *  2. Reconstructing the capability set an approved manifest covers. The
+ *  2. Describing a diff in one line, for the headline of a pending manifest.
+ *     It is a description of what changed and nothing more — this product
+ *     deliberately carries no risk classification (see D8 in
+ *     docs/superpowers/specs/2026-07-25-oss-hardening-design.md), because a
+ *     label like HIGH attaches authority to a judgement the tool cannot make.
+ *  3. Reconstructing the capability set an approved manifest covers. The
  *     gateway stores every manifest's canonical JSON but serves it on no
  *     route, so the set is replayed from the chain of stored diffs — and the
  *     replay is *checked* against those diffs, so the console can say whether
  *     what it is showing is sound rather than assert it.
  */
 
+import { pluralise } from '../lib/format';
 import type { Manifest, ManifestDiff, PendingManifest, Server } from './types';
 
 // ── Ranking a diff ──────────────────────────────────────────────────────────
 
 /**
  * The kinds of change, most consequential first. The order is the order the
- * console renders them in, and it is a judgement about risk: an input contract
- * that changed can accept arguments the approver never saw; a description that
- * changed cannot.
+ * console renders them in, and it is a judgement about consequence: an input
+ * contract that changed can accept arguments the approver never saw; a
+ * description that changed cannot.
  */
 export const CHANGE_KINDS = [
   'schema',
@@ -33,10 +39,14 @@ export const CHANGE_KINDS = [
 ] as const;
 export type ChangeKind = (typeof CHANGE_KINDS)[number];
 
-export type Domain = 'tool' | 'prompt' | 'resource';
+/** What a manifest's capabilities can be: changed in some way, or not. */
+export type CapabilityStatus = ChangeKind | 'unchanged';
 
-export interface ChangeItem {
-  kind: ChangeKind;
+export const DOMAINS = ['tool', 'prompt', 'resource'] as const;
+export type Domain = (typeof DOMAINS)[number];
+
+export interface Capability {
+  status: CapabilityStatus;
   domain: Domain;
   /** Tool or prompt name, or resource URI: whatever the upstream asserted. */
   identity: string;
@@ -44,16 +54,7 @@ export interface ChangeItem {
   withheld: boolean;
 }
 
-export interface ChangeGroup {
-  kind: ChangeKind;
-  /** Editorial heading — ours, not the gateway's. */
-  title: string;
-  /** What the change means for the person deciding. */
-  note: string;
-  items: ChangeItem[];
-}
-
-const GROUP_COPY: Record<ChangeKind, { title: string; note: string }> = {
+export const STATUS_COPY: Record<CapabilityStatus, { title: string; note: string }> = {
   schema: {
     title: 'Input contract changed',
     note: 'This tool now accepts different arguments. Read the new schema before admitting it — an argument nobody approved is an argument the model can be steered into filling.',
@@ -78,6 +79,21 @@ const GROUP_COPY: Record<ChangeKind, { title: string; note: string }> = {
     title: 'No longer advertised',
     note: 'The upstream server stopped offering this. Nothing to admit — it simply stops appearing.',
   },
+  unchanged: {
+    title: 'Unchanged',
+    note: 'Byte for byte identical to the approved baseline, so the gate keeps admitting it whatever is decided here.',
+  },
+};
+
+/** The short word each status wears on a capability row. */
+export const STATUS_LABEL: Record<CapabilityStatus, string> = {
+  schema: 'Contract changed',
+  added: 'New',
+  arguments: 'Arguments changed',
+  mime: 'Content type changed',
+  description: 'Description changed',
+  removed: 'No longer advertised',
+  unchanged: 'Unchanged',
 };
 
 /**
@@ -86,16 +102,17 @@ const GROUP_COPY: Record<ChangeKind, { title: string; note: string }> = {
  * Everything else — added, changed, even description-only — is withheld until
  * the manifest is approved (internal/approval/workflow.go, unchangedSets).
  */
-function isWithheld(kind: ChangeKind): boolean {
-  return kind !== 'removed';
+function isWithheld(status: CapabilityStatus): boolean {
+  return status !== 'removed' && status !== 'unchanged';
 }
 
-export function toChangeItems(diff: ManifestDiff | null): ChangeItem[] {
+/** Every capability this manifest changes, relative to the approved baseline. */
+export function changedCapabilities(diff: ManifestDiff | null): Capability[] {
   if (!diff) return [];
 
-  const items: ChangeItem[] = [];
-  const push = (kind: ChangeKind, domain: Domain, identity: string) =>
-    items.push({ kind, domain, identity, withheld: isWithheld(kind) });
+  const found: Capability[] = [];
+  const push = (status: ChangeKind, domain: Domain, identity: string) =>
+    found.push({ status, domain, identity, withheld: isWithheld(status) });
 
   for (const name of diff.added_tools ?? []) push('added', 'tool', name);
   for (const name of diff.added_prompts ?? []) push('added', 'prompt', name);
@@ -117,30 +134,94 @@ export function toChangeItems(diff: ManifestDiff | null): ChangeItem[] {
     push(rc.mime_type_changed ? 'mime' : 'description', 'resource', rc.uri);
   }
 
-  return items;
+  return found.sort(byConsequenceThenName);
 }
 
-export function groupChanges(items: ChangeItem[]): ChangeGroup[] {
-  return CHANGE_KINDS.map((kind) => ({
-    kind,
-    ...GROUP_COPY[kind],
-    items: items
-      .filter((item) => item.kind === kind)
-      .sort((a, b) => a.identity.localeCompare(b.identity)),
-  })).filter((group) => group.items.length > 0);
+/**
+ * The capabilities this manifest leaves exactly as the baseline has them.
+ *
+ * They matter to the person deciding: they are what keeps working whichever
+ * way the decision goes, and they are the difference between "this server is
+ * changing one tool" and "this server is being rebuilt".
+ */
+export function unchangedCapabilities(baseline: CapabilitySet, changed: Capability[]): Capability[] {
+  const touched = new Set(changed.map(identityKey));
+
+  const named: [Domain, string[]][] = [
+    ['tool', baseline.tools],
+    ['prompt', baseline.prompts],
+    ['resource', baseline.resources],
+  ];
+
+  return named
+    .flatMap(([domain, identities]) =>
+      identities.map((identity) => ({
+        status: 'unchanged' as const,
+        domain,
+        identity,
+        withheld: false,
+      })),
+    )
+    .filter((capability) => !touched.has(identityKey(capability)))
+    .sort(byConsequenceThenName);
+}
+
+function identityKey(capability: Capability): string {
+  return `${capability.domain}:${capability.identity}`;
+}
+
+function byConsequenceThenName(a: Capability, b: Capability): number {
+  const rank = statusRank(a.status) - statusRank(b.status);
+  return rank !== 0 ? rank : a.identity.localeCompare(b.identity);
+}
+
+function statusRank(status: CapabilityStatus): number {
+  const index = CHANGE_KINDS.indexOf(status as ChangeKind);
+  return index === -1 ? CHANGE_KINDS.length : index;
 }
 
 /** How many capabilities this manifest holds back until somebody decides. */
-export function withheldCount(items: ChangeItem[]): number {
-  return items.filter((item) => item.withheld).length;
+export function withheldCount(capabilities: Capability[]): number {
+  return capabilities.filter((capability) => capability.withheld).length;
 }
 
-/** The heaviest change in a manifest, for at-a-glance ranking of the queue. */
-export function topKind(items: ChangeItem[]): ChangeKind | null {
-  for (const kind of CHANGE_KINDS) {
-    if (items.some((item) => item.kind === kind)) return kind;
-  }
-  return null;
+// ── Describing a diff in one line ───────────────────────────────────────────
+
+const CHANGE_PHRASE: Record<ChangeKind, (count: number, domain: Domain) => string> = {
+  schema: (n) => `${n} input ${pluralise(n, 'contract')} changed`,
+  added: (n, domain) => `${n} new ${pluralise(n, domain)}`,
+  arguments: (n) => `${n} prompt argument ${pluralise(n, 'list')} changed`,
+  mime: (n) => `${n} resource content ${pluralise(n, 'type')} changed`,
+  description: (n) => `${n} ${pluralise(n, 'description')} changed`,
+  removed: (n, domain) => `${n} ${pluralise(n, domain)} no longer advertised`,
+};
+
+/** Only these read differently per domain; the rest name one domain already. */
+const SPLIT_BY_DOMAIN: ReadonlySet<ChangeKind> = new Set<ChangeKind>(['added', 'removed']);
+
+/**
+ * One line describing what a manifest changes. A description of the diff, not
+ * a verdict on it: nothing here ranks a capability as dangerous, because
+ * nothing in this system can.
+ */
+export function summariseChanges(capabilities: Capability[], hasBaseline: boolean): string {
+  if (!hasBaseline) return 'First connection — no approved baseline';
+
+  const phrases = CHANGE_KINDS.flatMap((kind) => phrasesFor(kind, capabilities));
+  if (phrases.length === 0) return 'No capability change';
+  return phrases.join(', ');
+}
+
+function phrasesFor(kind: ChangeKind, capabilities: Capability[]): string[] {
+  const matching = capabilities.filter((capability) => capability.status === kind);
+  const first = matching[0];
+  if (!first) return [];
+  if (!SPLIT_BY_DOMAIN.has(kind)) return [CHANGE_PHRASE[kind](matching.length, first.domain)];
+
+  return DOMAINS.flatMap((domain) => {
+    const count = matching.filter((capability) => capability.domain === domain).length;
+    return count === 0 ? [] : [CHANGE_PHRASE[kind](count, domain)];
+  });
 }
 
 // ── The approved baseline, per server ───────────────────────────────────────
@@ -173,6 +254,8 @@ export interface CapabilitySet {
   prompts: string[];
   resources: string[];
 }
+
+export const EMPTY_CAPABILITY_SET: CapabilitySet = { tools: [], prompts: [], resources: [] };
 
 export type Reconstruction =
   | { sound: true; set: CapabilitySet; chainLength: number }
@@ -257,6 +340,11 @@ export function replayCapabilities(
       resources: [...resources].sort(),
     },
   };
+}
+
+/** How many capabilities a reconstructed set holds, across all three kinds. */
+export function capabilityCount(set: CapabilitySet): number {
+  return set.tools.length + set.prompts.length + set.resources.length;
 }
 
 /**

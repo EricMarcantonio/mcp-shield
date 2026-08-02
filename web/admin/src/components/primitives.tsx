@@ -1,205 +1,165 @@
 /**
  * The small vocabulary the whole console is written in.
  *
- * The typographic rule these enforce: mono is machine-truth, sans is
- * editorial. A tool name, a hash, a schema fragment — the upstream server or
- * the gateway asserted those, so they are set in mono. A heading, a note, a
- * button label — we wrote those, so they are set in sans. Applied
- * consistently it tells a reader at a glance what is claimed and what is
- * commentary.
+ * Everything here is a thin wrapper over the design system in ds/organic.css:
+ * `.card`, `.tag`, `.btn`, `.table`. The wrappers exist so a rule like "a
+ * status tag always carries its word, never just its hue" is enforced in one
+ * place instead of remembered in twelve.
+ *
+ * The typographic rule the design keeps: monospace is machine-truth. A tool
+ * name, a manifest hash, an event type — the upstream server or the gateway
+ * asserted those. Headings, notes and button labels are ours, and are set in
+ * the body face.
  */
 
 import type { ReactNode } from 'react';
 import { shortHash } from '../lib/format';
+import type { Capability, CapabilityStatus } from '../api/derive';
+import { STATUS_LABEL } from '../api/derive';
 import type { ManifestState } from '../api/types';
-import type { ChangeKind } from '../api/derive';
 
 // ── Machine truth ───────────────────────────────────────────────────────────
 
-/** A manifest's identity. The full hash is always available on hover/copy. */
-export function Hash({ value, className = '' }: { value: string; className?: string }) {
+/** A tool name, prompt name, resource URI, event type or hash. */
+export function Mono({ children, title }: { children: ReactNode; title?: string }) {
   return (
-    <span
-      title={value}
-      className={`font-mono text-[0.8125rem] tracking-tight text-slate ${className}`}
-    >
-      {shortHash(value)}
+    <span className="mono text-[13px]" title={title}>
+      {children}
     </span>
   );
 }
 
-/** A tool name, prompt name, or resource URI: asserted by the upstream. */
-export function Identity({ children, className = '' }: { children: ReactNode; className?: string }) {
-  return <span className={`font-mono text-[0.8125rem] text-ink ${className}`}>{children}</span>;
+/** A manifest's identity. The full hash is available on hover and on copy. */
+export function Hash({ value }: { value: string }) {
+  return <Mono title={value}>{shortHash(value)}</Mono>;
 }
 
-// ── State ───────────────────────────────────────────────────────────────────
+// ── Tags ────────────────────────────────────────────────────────────────────
 
-const STATE_STYLE: Record<ManifestState, { chip: string; word: string }> = {
-  PENDING: { chip: 'border-signal/40 bg-signal/10 text-signal', word: 'Pending' },
-  APPROVED: { chip: 'border-slate/25 bg-slate/5 text-slate', word: 'Approved' },
-  REJECTED: { chip: 'border-rule bg-paper text-slate/60', word: 'Rejected' },
-  SUPERSEDED: { chip: 'border-rule bg-paper text-slate/50', word: 'Superseded' },
+export type TagTone = 'accent' | 'accent-2' | 'neutral' | 'outline';
+
+export function Tag({ tone, children }: { tone: TagTone; children: ReactNode }) {
+  return <span className={`tag tag-${tone}`}>{children}</span>;
+}
+
+/**
+ * Colour is never the only carrier: every tag below spells out its state, so
+ * the hue is a second reading of something the word already said.
+ */
+const STATUS_TONE: Record<CapabilityStatus, TagTone> = {
+  schema: 'outline',
+  added: 'accent',
+  arguments: 'outline',
+  mime: 'outline',
+  description: 'accent-2',
+  removed: 'neutral',
+  unchanged: 'neutral',
 };
 
-export function StateChip({ state }: { state: ManifestState }) {
-  const style = STATE_STYLE[state];
-  return (
-    <span
-      className={`inline-flex items-center gap-1.5 rounded-sm border px-2 py-0.5 font-display text-micro uppercase tracking-[0.12em] ${style.chip}`}
-    >
-      {state === 'PENDING' && (
-        <span aria-hidden className="h-1.5 w-1.5 rounded-full bg-signal" />
-      )}
-      {style.word}
-    </span>
-  );
+export function StatusTag({ status }: { status: CapabilityStatus }) {
+  return <Tag tone={STATUS_TONE[status]}>{STATUS_LABEL[status]}</Tag>;
 }
 
 /**
- * Withheld is amber, never red — the gate holding a capability back is the
- * product working. It is also never colour alone: the word "Withheld" and a
- * bar glyph carry the same information for anyone the amber does not reach.
+ * A capability chip: the name the upstream asserted, toned by what happened
+ * to it. The tone is the second reading — the enclosing card already states
+ * the change in words, and the word rides along here for assistive tech.
  */
-export function HeldMark({ label = 'Withheld' }: { label?: string }) {
+export function CapabilityTag({ capability }: { capability: Capability }) {
   return (
-    <span className="inline-flex items-center gap-1.5 whitespace-nowrap font-display text-micro uppercase tracking-[0.12em] text-held">
-      <span aria-hidden className="inline-block h-3 w-[3px] rounded-sm bg-held" />
-      {label}
-    </span>
+    <Tag tone={STATUS_TONE[capability.status]}>
+      {capability.identity}
+      <span className="sr-only"> — {STATUS_LABEL[capability.status]}</span>
+    </Tag>
   );
 }
 
-export function AdmittedMark({ label = 'Admitted' }: { label?: string }) {
-  return (
-    <span className="inline-flex items-center gap-1.5 whitespace-nowrap font-display text-micro uppercase tracking-[0.12em] text-slate/70">
-      <span aria-hidden className="inline-block h-3 w-[3px] rounded-sm bg-slate/40" />
-      {label}
-    </span>
-  );
-}
-
-// ── Change weight ───────────────────────────────────────────────────────────
-
-/**
- * Weight is the design's argument about risk. A changed input schema gets a
- * solid amber rule and a heavier count; a changed description gets a hairline
- * and quiet type. They are not the same event and are not drawn as though
- * they were.
- */
-export const KIND_WEIGHT: Record<ChangeKind, { rule: string; count: string; badge: string }> = {
-  schema: { rule: 'bg-held', count: 'text-held', badge: 'bg-held/10 text-held border-held/30' },
-  added: { rule: 'bg-held/70', count: 'text-held', badge: 'bg-held/10 text-held border-held/30' },
-  arguments: {
-    rule: 'bg-held/70',
-    count: 'text-held',
-    badge: 'bg-held/10 text-held border-held/30',
-  },
-  mime: { rule: 'bg-held/40', count: 'text-held/80', badge: 'bg-held/5 text-held border-held/20' },
-  description: {
-    rule: 'bg-rule',
-    count: 'text-slate/60',
-    badge: 'bg-paper text-slate/60 border-rule',
-  },
-  removed: { rule: 'bg-rule', count: 'text-slate/60', badge: 'bg-paper text-slate/60 border-rule' },
+const MANIFEST_STATE_TONE: Record<ManifestState, TagTone> = {
+  PENDING: 'accent',
+  APPROVED: 'accent-2',
+  REJECTED: 'outline',
+  SUPERSEDED: 'neutral',
 };
 
-// ── Layout ──────────────────────────────────────────────────────────────────
+const MANIFEST_STATE_WORD: Record<ManifestState, string> = {
+  PENDING: 'Pending',
+  APPROVED: 'Approved',
+  REJECTED: 'Rejected',
+  SUPERSEDED: 'Superseded',
+};
 
-export function PageHeading({
-  eyebrow,
-  title,
-  lede,
-  aside,
-}: {
-  eyebrow?: ReactNode;
-  title: string;
-  lede?: ReactNode;
-  aside?: ReactNode;
-}) {
-  return (
-    <header className="mb-8 flex flex-col gap-4 border-b border-rule pb-6 sm:flex-row sm:items-end sm:justify-between">
-      <div className="max-w-2xl">
-        {eyebrow && <p className="label mb-2">{eyebrow}</p>}
-        <h1 className="font-display text-3xl font-semibold leading-tight text-ink sm:text-4xl">
-          {title}
-        </h1>
-        {lede && <p className="mt-3 text-sm leading-relaxed text-slate/80">{lede}</p>}
-      </div>
-      {aside && <div className="shrink-0">{aside}</div>}
-    </header>
-  );
+export function StateTag({ state }: { state: ManifestState }) {
+  return <Tag tone={MANIFEST_STATE_TONE[state]}>{MANIFEST_STATE_WORD[state]}</Tag>;
 }
 
-export function Count({ value, unit, tone = '' }: { value: number; unit: string; tone?: string }) {
-  return (
-    <span className="inline-flex items-baseline gap-1.5">
-      <span className={`font-display text-2xl font-semibold tabular-nums ${tone || 'text-ink'}`}>
-        {value}
-      </span>
-      <span className="label">{unit}</span>
-    </span>
-  );
-}
+// ── Page furniture ──────────────────────────────────────────────────────────
 
-/**
- * An empty state that says what the emptiness means. A server with no
- * approved baseline is a normal, important, fail-closed state — not a fault —
- * so `tone` decides whether it reads as settled, held, or broken.
- */
-export function EmptyState({
-  tone = 'settled',
-  title,
-  children,
-  action,
-}: {
-  tone?: 'settled' | 'held' | 'fault';
-  title: string;
-  children?: ReactNode;
-  action?: ReactNode;
-}) {
-  const border =
-    tone === 'held' ? 'border-held/35' : tone === 'fault' ? 'border-fault/35' : 'border-rule';
-  const bar = tone === 'held' ? 'bg-held' : tone === 'fault' ? 'bg-fault' : 'bg-rule';
-
+export function PageHeading({ title, note }: { title: string; note?: ReactNode }) {
   return (
-    <div className={`relative overflow-hidden rounded-sm border bg-white px-6 py-7 ${border}`}>
-      <span aria-hidden className={`absolute inset-y-0 left-0 w-[3px] ${bar}`} />
-      <h3 className="font-display text-lg font-semibold text-ink">{title}</h3>
-      <div className="mt-2 max-w-2xl space-y-2 text-sm leading-relaxed text-slate/80">
-        {children}
-      </div>
-      {action && <div className="mt-4">{action}</div>}
+    <div className="flex flex-wrap items-baseline gap-x-[var(--space-3)] gap-y-[var(--space-1)]">
+      <h1 className="m-0 text-[28px]">{title}</h1>
+      {note && <p className="text-muted m-0 text-sm">{note}</p>}
     </div>
   );
 }
 
-export function Button({
-  variant = 'quiet',
-  ...props
-}: React.ButtonHTMLAttributes<HTMLButtonElement> & {
-  variant?: 'primary' | 'quiet' | 'danger';
-}) {
-  const styles = {
-    primary: 'bg-slate text-paper hover:bg-ink disabled:bg-slate/40',
-    quiet: 'border border-rule bg-white text-slate hover:border-slate/40 disabled:text-slate/40',
-    danger: 'border border-fault/40 bg-white text-fault hover:bg-fault/5 disabled:text-fault/40',
-  }[variant];
+/** A heading for a block inside a page. `.card-kicker` is the design's rule. */
+export function SectionKicker({ children }: { children: ReactNode }) {
+  return <h2 className="card-kicker m-0 mb-[var(--space-2)]">{children}</h2>;
+}
 
+/**
+ * An empty state that says what the emptiness means. A server with nothing
+ * approved is a normal, important, fail-closed state — not a fault — so the
+ * copy, not the colour, carries which of the two this is.
+ */
+export function EmptyState({
+  kicker,
+  title,
+  children,
+  action,
+}: {
+  kicker?: ReactNode;
+  title: string;
+  children?: ReactNode;
+  action?: ReactNode;
+}) {
   return (
-    <button
-      type="button"
-      {...props}
-      className={`inline-flex items-center justify-center gap-2 rounded-sm px-4 py-2 font-sans text-sm font-medium transition-colors disabled:cursor-not-allowed ${styles} ${props.className ?? ''}`}
-    />
+    <div className="card items-center px-[var(--space-6)] py-[var(--space-8)] text-center">
+      {kicker && <p className="card-kicker m-0">{kicker}</p>}
+      <h2 className="m-0 mb-[var(--space-2)] text-[20px]">{title}</h2>
+      {children && (
+        <div className="text-muted m-0 max-w-[60ch] text-sm [&>p]:mb-[var(--space-2)] [&>p:last-child]:mb-0">
+          {children}
+        </div>
+      )}
+      {action && <div className="mt-[var(--space-3)]">{action}</div>}
+    </div>
   );
 }
 
-/** Skeleton for a list that is still loading. Still, not shimmering. */
+/**
+ * A field the gateway has no route for. Said plainly and quietly, because a
+ * console for a security gateway that fills a gap with something plausible is
+ * worse than one that admits the gap.
+ */
+export function Unavailable({ children }: { children: ReactNode }) {
+  return <p className="text-muted m-0 text-[13px] italic">{children}</p>;
+}
+
 export function Loading({ label }: { label: string }) {
   return (
-    <p role="status" className="py-10 text-center text-sm text-slate/50">
+    <p role="status" className="text-muted m-0 py-[var(--space-8)] text-center text-sm">
       {label}
     </p>
+  );
+}
+
+/** A table that scrolls inside itself rather than pushing the page sideways. */
+export function TableFrame({ children }: { children: ReactNode }) {
+  return (
+    <div className="-mx-[var(--space-2)] overflow-x-auto px-[var(--space-2)]">
+      <div className="min-w-[640px]">{children}</div>
+    </div>
   );
 }

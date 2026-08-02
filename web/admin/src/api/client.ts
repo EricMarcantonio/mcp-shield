@@ -20,7 +20,6 @@ import type {
   ManifestDiff,
   PendingManifest,
   Server,
-  WireServer,
 } from './types';
 
 export class ApiError extends Error {
@@ -148,15 +147,8 @@ function errorMessage(body: string, status: number): string {
 
 // ── Routes the gateway serves today ─────────────────────────────────────────
 
-/** GET /api/servers. Go field names in, ordinary field names out. */
 export async function listServers(): Promise<Server[]> {
-  const wire = await request<WireServer[]>('/api/servers');
-  return (wire ?? []).map((s) => ({
-    id: s.ID,
-    name: s.Name,
-    endpoint: s.Endpoint,
-    createdAt: s.CreatedAt,
-  }));
+  return (await request<Server[]>('/api/servers')) ?? [];
 }
 
 export async function listPendingManifests(): Promise<PendingManifest[]> {

@@ -1,11 +1,11 @@
 /**
  * The shapes the approval API actually returns today, transcribed from
- * internal/api/views.go, internal/database/models.go and internal/diff/diff.go
- * and verified against a running gateway.
+ * internal/api/listing_views.go, internal/api/views.go and
+ * internal/diff/diff.go, and verified against a running gateway.
  *
- * Where the gateway is inconsistent (GET /api/servers returns Go field names,
- * every other route returns snake_case) the wire shape is typed honestly here
- * and normalised once, in client.ts, rather than leaking into components.
+ * Every route is snake_case. GET /api/servers used to leak Go field names and
+ * was normalised in client.ts; it no longer does, and the normalisation went
+ * with it.
  */
 
 /** Manifest lifecycle states, from internal/database/models.go. */
@@ -14,19 +14,12 @@ export type ManifestState = (typeof MANIFEST_STATES)[number];
 
 export type Decision = 'APPROVED' | 'REJECTED';
 
-/** GET /api/servers — note the Go-cased keys; see normaliseServer(). */
-export interface WireServer {
-  ID: number;
-  Name: string;
-  Endpoint: string;
-  CreatedAt: string;
-}
-
+/** GET /api/servers */
 export interface Server {
   id: number;
   name: string;
   endpoint: string;
-  createdAt: string;
+  created_at: string;
 }
 
 /** GET /api/manifests/pending */

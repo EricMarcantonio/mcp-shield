@@ -4,11 +4,10 @@ A React console for the mcp-shield approval API. It answers four questions:
 
 | View | Question |
 |---|---|
-| **Pending** (`/`) | What is waiting on me? The queue of manifests the gate is holding, ranked so a changed input schema does not sit at the same visual pitch as a reworded sentence. |
-| **Manifest** (`/manifests/:id`) | What exactly changed, and do I admit it? The approved baseline left of the seam, what the upstream is advertising right of it, every difference crossing between. Approve and reject live here. |
-| **Servers** (`/servers`) | What is approved right now? Per server: the approved manifest hash, and the capabilities that hash admits. A server with no baseline is shown as the fail-closed state it is, not as an error. |
-| **Ledger** (`/ledger`) | What happened? Every manifest the gateway has recorded and what was decided about it. |
-| **Delivery** (`/delivery`) | What is broken? Gateway health, and notifications the dispatcher gave up on. |
+| **Pending** (`/`) | What is waiting on me? One expandable card per manifest the gate is holding: what changed, what it leaves alone, and the two buttons that settle it. Approve and reject live here, behind a dialog that requires a reason. |
+| **Servers** (`/servers`) | What is approved right now? Per server: the approved manifest hash, how many capabilities it admits, and the last decision recorded. A server with no baseline is shown as the fail-closed state it is, not as an error. |
+| **History** (`/history`) | What was decided? One row per decision — and a decision covers a whole manifest, never a single tool. |
+| **Notifications** (`/notifications`) | Was anyone actually told? Whether delivery targets exist, and the events the dispatcher gave up on. |
 
 **The approved manifest hash is the approved schema version.** Manifests are
 identified throughout by their short hash (`5332e4b6`), never by a sequence
@@ -34,8 +33,16 @@ npm run dev        # http://localhost:5173
 ```
 
 The dev server proxies `/api` and `/healthz` to the gateway, so the browser
-stays same-origin and **the gateway needs no CORS configuration**. Point it
-somewhere else with `DEV_GATEWAY_URL` (see `.env.example`).
+stays same-origin and **the gateway needs no CORS configuration** — including
+for approve and reject. Point it somewhere else with `DEV_GATEWAY_URL` (see
+`.env.example`).
+
+That holds because the proxy forwards `Host` unchanged (`changeOrigin` is off,
+see the note in `vite.config.ts`). The gateway refuses a state-changing request
+whose `Origin` does not name the host it was addressed to — the check that
+stops a form POST on any page on the internet from approving a manifest — so
+rewriting `Host` would 403 every approval in dev. Production nginx forwards
+`Host` the same way.
 
 To produce something to look at, drive the gateway the way a client would —
 `docs/manual-testing.md` in the repository root walks through creating a first
@@ -124,71 +131,85 @@ A 401 handler goes in the same function. `src/api/auth.tsx` is the thin context
 that supplies the operator name today and would supply it from token claims
 later. No component imports `fetch`.
 
-## What this gateway build does not serve
+## Where the API cannot answer
 
 The console is written against the full API and degrades where a route is
-missing, naming the route it wants rather than showing an empty result that
-would read as "nothing happened". Today three things are unavailable:
+missing, naming the gap rather than filling it. **An admin console for a
+security gateway that displays a plausible-looking fabrication is worse than
+one that says it does not know.** Four gaps exist today:
 
-- **`GET /api/manifests/{id}/approvals`** — who approved or rejected a
-  manifest, when, and why. The gateway stores this and its own server-rendered
-  dashboard renders it; no JSON route exposes it. The ledger can show what was
-  decided but not who decided it.
 - **`GET /api/manifests/{id}/contents`** — the manifest's capability content.
-  Without it, descriptions and input schemas cannot be shown. The admitted
-  capability *names* on the Servers view are reconstructed by replaying the
-  stored diffs along a server's approval chain and checking each step; the view
-  says so where it does this.
-- **`GET /api/manifests`** — a manifest list. Without it there is no way to ask
-  which manifest is a server's approved baseline, so `listAllManifests()` in
-  `src/api/client.ts` finds the highest manifest id by doubling and bisecting,
-  then reads them. It costs a few requests on a local install and disappears
-  the moment a list route exists.
+  The gateway stores every manifest's canonical JSON but serves it on no route,
+  so a capability's description and input schema cannot be shown. The
+  capability *names* are real: they come from the stored diffs, and an approved
+  server's admitted set is reconstructed by replaying the diffs along its
+  approval chain and checking every step. Where a description would go, the
+  expanded capability row says the route does not exist.
+- **`FAIL_MODE`** — no route reports whether the gate is blocking or merely
+  observing. The sidebar reads **Not reported**. Rendering `block` because it
+  is the default would invent the most consequential fact on the screen: an
+  operator running `FAIL_MODE=warn` would see a console telling them they are
+  protected. A read-only `fail_mode` field on `/healthz` would light it up.
+- **The notification targets** — no route describes them, so their configured
+  names and formats are not shown. Their URLs would not be shown even if a
+  route existed: a webhook URL is a capability-bearing credential, and the
+  gateway already redacts even the host out of its own connection errors.
+- **Which target a failed delivery was for** — `GET /api/notifications/failed`
+  reports the event, not the target, so the table's first column is the server
+  the event was about. The target's configured name appears inside the error
+  text the gateway wrote; the console does not parse it back out.
 
-Each is a single `optional()` probe. When a route lands, the corresponding
-section fills in with no other change.
+Nothing here is a risk score. Risk classification was removed from this
+product deliberately (D8) — a substring match over tool names attaches an
+authoritative label to a judgement the tool cannot make. The headline on a
+pending card describes the diff and stops there.
 
 ## Layout
 
 ```
 src/
+  ds/
+    organic.css    the design system — vendored, never edited here
   api/
     client.ts      the only module that talks HTTP — and the auth seam
     types.ts       wire shapes, transcribed from the Go source
-    derive.ts      ranking a diff; replaying a capability set
+    derive.ts      ranking and describing a diff; replaying a capability set
     queries.ts     every read, with its caching policy
     auth.tsx       the operator name
   components/
-    Seam.tsx       the signature device: baseline | proposed
-    primitives.tsx the vocabulary — Hash, Identity, StateChip, HeldMark…
-    Shell.tsx      masthead, nav, health, operator
+    primitives.tsx the vocabulary — Tag, StatusTag, EmptyState, Unavailable…
+    Shell.tsx      sidebar, nav, recorded-as, gate mode
+    DecisionDialog.tsx  approve and reject, behind a required reason
     Failure.tsx    what to show when a read fails
   lib/
     router.tsx     History API, ~90 lines, no routing dependency
     format.ts      short hashes, timestamps, ages
-  views/           one file per screen
+  views/           one file per section
 ```
 
 ## Design
 
-The concept is a **ledger, not a console** — what this tool produces is a
-permanent record of human judgement about what software was allowed to do, and
-it should look like a record you would be willing to be audited against. Light,
-precise, archival.
+The visual identity is the **Organic** design system, imported from the Claude
+Design project that owns it and vendored verbatim at `src/ds/organic.css`.
+`web/admin/design/Admin Dashboard.dc.html` is the source of record for the
+layout; the React implementation is checked against it rather than against a
+description of itself.
 
-- **Palette** lives in `tailwind.config.ts` as named tokens; no component
-  spells a hex value. `held` (amber) marks a withheld capability and is
-  deliberately not red — withholding is the gateway working as designed, and
-  colouring correct behaviour red teaches an operator to read the product's
-  whole purpose as a fault. Red (`fault`) is reserved for a gateway that is not
-  answering and a notification that never landed. Held state always carries a
-  word and a glyph, never colour alone.
-- **Type:** IBM Plex, self-hosted through `@fontsource` (nothing is fetched
-  from a font CDN). The rule is **mono means machine-truth, sans means we wrote
-  it** — a tool name is mono because the upstream asserted it; a heading is
-  sans because we authored it.
-- **The seam** is the logo's split shield made operational: one continuous rule
-  down the manifest view with the approved baseline on its left and the
-  proposed state on its right. Approving closes it — the halves meet and the
-  rule settles out of `signal` into `slate`. It is the only orchestrated motion
-  in the product, and `prefers-reduced-motion` removes it.
+- **`src/ds/organic.css` is vendored.** Retune it in the design project and
+  re-import; do not edit it here, or the two will drift. The one deliberate
+  local change is documented in its header: the Google Fonts `@import` is
+  removed.
+- **Tailwind does layout only.** `corePlugins.preflight` is off and
+  `tailwind.config.ts` carries no palette — colour, type, spacing, radius and
+  the reset all come from the design system's variables and classes. A second
+  copy of the tokens in Tailwind would be a second source of truth. Spacing
+  utilities address the tokens directly (`gap-[var(--space-4)]`).
+- **Type:** Caprasimo for headings, Figtree for body, self-hosted through
+  `@fontsource` so nothing is fetched from a font CDN — this console is served
+  beside a security gateway and should not phone home to render. Monospace is
+  the platform's own, and means machine-truth: a tool name, a manifest hash, an
+  event type.
+- **Colour is never the only carrier.** Every status tag spells out its state;
+  the hue is a second reading of something the word already said.
+- **Nothing animates.** There is no motion to remove for
+  `prefers-reduced-motion`, and the media query stays as a guard.

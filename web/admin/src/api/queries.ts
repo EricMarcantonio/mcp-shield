@@ -24,9 +24,20 @@ export const keys = {
   diff: (id: number) => ['manifests', id, 'diff'] as const,
   approvals: (id: number) => ['manifests', id, 'approvals'] as const,
   contents: (id: number) => ['manifests', id, 'contents'] as const,
+  decisions: ['decisions'] as const,
   failedNotifications: ['notifications', 'failed'] as const,
   health: ['health'] as const,
 };
+
+/**
+ * Recent decisions across every server, newest first.
+ *
+ * One decision covers one manifest, never one tool — that is what the gateway
+ * records and it is the whole point of the audit trail.
+ */
+export function useDecisions() {
+  return useQuery({ queryKey: keys.decisions, queryFn: () => api.listDecisions() });
+}
 
 export function usePending() {
   return useQuery({
@@ -176,6 +187,7 @@ export function useDecision(kind: DecisionKind) {
       void client.invalidateQueries({ queryKey: keys.manifestIndex });
       void client.invalidateQueries({ queryKey: keys.manifest(id) });
       void client.invalidateQueries({ queryKey: keys.approvals(id) });
+      void client.invalidateQueries({ queryKey: keys.decisions });
       void client.invalidateQueries({ queryKey: ['capabilities'] });
     },
   });

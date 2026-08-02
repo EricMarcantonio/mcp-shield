@@ -6,22 +6,23 @@
  * screen against the gateway's logs should see the same sentence in both.
  */
 
+import type { ReactNode } from 'react';
 import { ApiError, RouteNotServedError, UnreachableError } from '../api/client';
 import { apiBaseUrl } from '../lib/config';
-import { Button, EmptyState } from './primitives';
+import { EmptyState, Mono } from './primitives';
 
 export function Failure({ error, retry }: { error: unknown; retry?: () => void }) {
   const { title, body } = describe(error);
 
   return (
     <EmptyState
-      tone="fault"
+      kicker="Could not read"
       title={title}
       action={
         retry && (
-          <Button variant="quiet" onClick={retry}>
+          <button type="button" className="btn btn-secondary" onClick={retry}>
             Try again
-          </Button>
+          </button>
         )
       }
     >
@@ -35,7 +36,7 @@ function isUpstreamDown(error: unknown): boolean {
   return error instanceof ApiError && [502, 503, 504].includes(error.status);
 }
 
-function describe(error: unknown): { title: string; body: React.ReactNode } {
+function describe(error: unknown): { title: string; body: ReactNode } {
   const target = apiBaseUrl || 'this origin';
 
   if (error instanceof UnreachableError || isUpstreamDown(error)) {
@@ -44,12 +45,12 @@ function describe(error: unknown): { title: string; body: React.ReactNode } {
       body: (
         <>
           <p>
-            Nothing answered at <span className="font-mono text-[0.8125rem]">{target}</span>.
+            Nothing answered at <Mono>{target}</Mono>.
           </p>
           <p>
-            Start the gateway, or point this console somewhere else with{' '}
-            <span className="font-mono text-[0.8125rem]">API_BASE_URL</span>. While it is down the
-            gate is still enforcing: capabilities stay withheld, they just cannot be reviewed here.
+            Start the gateway, or point this console somewhere else with <Mono>API_BASE_URL</Mono>.
+            While it is down the gate is still enforcing: capabilities stay withheld, they just
+            cannot be reviewed here.
           </p>
         </>
       ),
@@ -61,8 +62,7 @@ function describe(error: unknown): { title: string; body: React.ReactNode } {
       title: 'This gateway does not serve that route',
       body: (
         <p>
-          <span className="font-mono text-[0.8125rem]">{error.path}</span> is not part of this
-          gateway build's API.
+          <Mono>{error.path}</Mono> is not part of this gateway build&rsquo;s API.
         </p>
       ),
     };
@@ -73,7 +73,9 @@ function describe(error: unknown): { title: string; body: React.ReactNode } {
       title: `The gateway refused the request (${error.status})`,
       body: (
         <>
-          <p className="font-mono text-[0.8125rem] text-ink">{error.message}</p>
+          <p>
+            <Mono>{error.message}</Mono>
+          </p>
           {error.isConflict && (
             <p>
               Somebody decided this manifest first. Reload the queue to see the decision that was
@@ -87,6 +89,10 @@ function describe(error: unknown): { title: string; body: React.ReactNode } {
 
   return {
     title: 'The request failed',
-    body: <p className="font-mono text-[0.8125rem] text-ink">{String(error)}</p>,
+    body: (
+      <p>
+        <Mono>{String(error)}</Mono>
+      </p>
+    ),
   };
 }

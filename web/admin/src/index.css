@@ -1,56 +1,110 @@
 /* Fonts are vendored through @fontsource and bundled with the app. Nothing
    here reaches out to a font CDN: this console is meant to run on a closed
-   network in front of a security gateway. */
-@import '@fontsource/ibm-plex-sans/latin-400.css';
-@import '@fontsource/ibm-plex-sans/latin-500.css';
-@import '@fontsource/ibm-plex-sans/latin-600.css';
-@import '@fontsource/ibm-plex-sans-condensed/latin-600.css';
-@import '@fontsource/ibm-plex-mono/latin-400.css';
-@import '@fontsource/ibm-plex-mono/latin-500.css';
+   network in front of a security gateway, and the design system's own
+   Google Fonts @import was removed for the same reason. */
+@import '@fontsource/caprasimo/latin-400.css';
+@import '@fontsource/figtree/latin-400.css';
+@import '@fontsource/figtree/latin-500.css';
+@import '@fontsource/figtree/latin-600.css';
+
+/* The design system is the base layer. Tailwind's preflight is switched off
+   in tailwind.config.ts so that organic.css — which carries its own reset,
+   type scale and focus ring — owns the ground, and Tailwind is left to do
+   layout on top of it. */
+@import './ds/organic.css';
 
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
 @layer base {
-  html {
-    -webkit-text-size-adjust: 100%;
+  /* Tailwind's border and divide utilities set a width and inherit the style
+     and colour from preflight. Preflight is off, so supply them here — and
+     supply them from the design system's rule colour, so a `border-t` is the
+     same hairline the design draws. */
+  *,
+  ::before,
+  ::after {
+    border-width: 0;
+    border-style: solid;
+    border-color: var(--color-neutral-200);
   }
 
-  body {
-    @apply bg-paper font-sans text-ink antialiased;
+  button {
+    background: none;
+    color: inherit;
+    font: inherit;
+    text-align: inherit;
+    cursor: pointer;
   }
 
-  /* Focus must be visible on a page this pale, and it must not be the only
-     signal a control carries. */
-  :focus-visible {
-    @apply outline-none ring-2 ring-signal ring-offset-2 ring-offset-paper;
+  ul,
+  ol {
+    margin: 0;
+    padding: 0;
+    list-style: none;
   }
 
-  ::selection {
-    background-color: #069eb933;
+  code {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 0.92em;
+  }
+
+  dialog::backdrop {
+    background: color-mix(in srgb, var(--color-neutral-900) 50%, transparent);
   }
 }
 
 @layer components {
-  /* The seam: the vertical rule the whole product is organised around. Left
-     of it is the approved baseline, right of it is what the upstream is
-     advertising now. */
-  .seam-rule {
-    @apply bg-rule;
+  /* Machine-asserted strings — a manifest hash, a tool name, an event type —
+     are set in monospace, as the design does. No mono webfont is downloaded
+     for it; the platform's own is the right weight beside Figtree. */
+  .mono {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   }
 
-  .card {
-    @apply rounded-sm border border-rule bg-white;
+  .skip-link {
+    position: absolute;
+    left: -9999px;
+    top: 0;
+    z-index: 10;
+  }
+  .skip-link:focus-visible {
+    left: var(--space-3);
+    top: var(--space-3);
+    background: var(--color-surface);
+    border-radius: 999px;
+    padding: var(--space-2) var(--space-4);
+    font-size: 14px;
   }
 
-  .label {
-    @apply font-display text-micro uppercase tracking-[0.14em] text-slate/60;
+  .side-nav-item {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    padding: var(--space-2) var(--space-3);
+    border-radius: 999px;
+    font-size: 14px;
+    color: var(--color-neutral-800);
+    text-decoration: none;
+  }
+  .side-nav-item:hover {
+    background: var(--color-neutral-200);
+  }
+  .side-nav-item[aria-current='page'] {
+    background: var(--color-accent-100);
+    color: var(--color-accent-800);
+  }
+
+  /* One capability inside an expanded manifest. */
+  .capability-row {
+    background: var(--color-neutral-100);
+    border-radius: var(--radius-md);
+    padding: var(--space-3);
   }
 }
 
-/* One orchestrated motion, and it is switched off for anyone who asked for
-   less. Everything else in the product is still by design. */
+/* Motion is decoration here, and anyone who asked for less gets none. */
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,

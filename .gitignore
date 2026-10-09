@@ -15,3 +15,6 @@ graphify-out/
 .claude/worktrees/
 web/admin/node_modules/
 web/admin/dist/
+
+# graft's local graph cache — regenerable, not committed (run `graft build`).
+/graft/

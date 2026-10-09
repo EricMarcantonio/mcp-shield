@@ -157,7 +157,50 @@ guarantees behind manifest immutability and fail-closed behavior — are in
 | `FAIL_MODE` | `block` | `block` (fail closed) or `warn` (observe only, never for production) |
 | `TEMPLATES_DIR` | `web/dashboard/templates` | Dashboard templates |
 | `NOTIFY_CONFIG_PATH` | `config/notify.json` | Webhook notification config; missing file disables notifications |
+| `CORS_ALLOWED_ORIGINS` | *(empty)* | Comma-separated browser origins allowed to call the API. Empty means none. `*` refuses to start — see below |
 | `MCP_SHIELD_API` | `http://localhost:8081` | Target API for the `mcp-shield` CLI |
+
+Storage is SQLite, and only SQLite. That is what keeps mcp-shield a single
+static binary built with `CGO_ENABLED=0` and shipped on a distroless image
+with no database to run beside it. `database.Store` is a plain interface if
+you ever need another backend, but nothing here assumes one exists.
+
+### Browser access (CORS)
+
+`CORS_ALLOWED_ORIGINS` is empty by default, so no web page on another origin
+can call this API at all. To let one in:
+
+```sh
+CORS_ALLOWED_ORIGINS=http://localhost:5173,https://admin.internal.example
+```
+
+Exact-match, no wildcards. **Setting it to `*` makes the gateway refuse to
+start**, on purpose: `approve` and `reject` are unauthenticated by design, so
+a wildcard would let any page a user happens to open drive their browser into
+approving a capability change on their own gateway — the browser can reach
+localhost, the gateway asks for no credentials, and the audit trail records
+whatever username the attacking page sent. Turning this on is a deployment
+decision with consequences, not a convenience toggle.
+
+Full details, including what the `username` field does and does not promise:
+**[docs/api.md](docs/api.md)**.
+
+## HTTP API
+
+Every endpoint, with request/response examples, error codes, pagination and
+the attestation model, is documented in **[docs/api.md](docs/api.md)**.
+
+Added in 0.2.0, all additive to the released v0.1.x surface:
+
+| Endpoint | Purpose |
+|---|---|
+| `GET /api/servers/{name}` | One server and the baseline the gate is enforcing for it |
+| `GET /api/manifests` | Full manifest history, filtered by `server`, `state`, `hash`; paginated |
+| `GET /api/manifests/{id}/decisions` | Decision history for one manifest |
+| `GET /api/decisions` | The audit trail across every server: who decided what, when, and why |
+
+Error bodies gained a machine-readable `code` beside the existing `error`
+string. No released response changed shape.
 
 ## Notifications
 

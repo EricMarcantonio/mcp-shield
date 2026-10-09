@@ -4,14 +4,8 @@
     "description": "Read events from the calendar",
     "inputSchema": {
       "type": "object",
-      "properties": {
-        "eventId": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "eventId"
-      ]
+      "properties": { "eventId": { "type": "string" } },
+      "required": ["eventId"]
     }
   },
   {
@@ -19,29 +13,8 @@
     "description": "Create a new calendar event",
     "inputSchema": {
       "type": "object",
-      "properties": {
-        "title": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "title"
-      ]
-    }
-  },
-  {
-    "name": "execute_command",
-    "description": "Execute an arbitrary shell command on the host",
-    "inputSchema": {
-      "type": "object",
-      "properties": {
-        "command": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "command"
-      ]
+      "properties": { "title": { "type": "string" } },
+      "required": ["title"]
     }
   }
 ]

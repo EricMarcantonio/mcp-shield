@@ -81,10 +81,12 @@ type Store interface {
 	GetManifestByID(ctx context.Context, id int64) (*ManifestRecord, error)
 	GetApprovedManifest(ctx context.Context, serverID int64) (*ManifestRecord, error)
 	ListPendingManifests(ctx context.Context) ([]ManifestRecord, error)
+	ListManifests(ctx context.Context, f ManifestFilter) ([]ManifestRecord, error)
 	UpdateManifestState(ctx context.Context, id int64, newState string) error
 
 	InsertApproval(ctx context.Context, a *Approval) (int64, error)
 	ListApprovalsForManifest(ctx context.Context, manifestID int64) ([]Approval, error)
+	ListRecentApprovals(ctx context.Context, limit, offset int) ([]Approval, error)
 
 	// Notification outbox. EnqueueNotification is deliberately a plain
 	// INSERT with no network or filesystem work of its own, so it can be
@@ -241,6 +243,10 @@ func (q queries) ListPendingManifests(ctx context.Context) ([]ManifestRecord, er
 	return listPendingManifests(ctx, q.e)
 }
 
+func (q queries) ListManifests(ctx context.Context, f ManifestFilter) ([]ManifestRecord, error) {
+	return listManifests(ctx, q.e, f)
+}
+
 func (q queries) UpdateManifestState(ctx context.Context, id int64, newState string) error {
 	return updateManifestState(ctx, q.e, id, newState)
 }
@@ -251,6 +257,10 @@ func (q queries) InsertApproval(ctx context.Context, a *Approval) (int64, error)
 
 func (q queries) ListApprovalsForManifest(ctx context.Context, manifestID int64) ([]Approval, error) {
 	return listApprovalsForManifest(ctx, q.e, manifestID)
+}
+
+func (q queries) ListRecentApprovals(ctx context.Context, limit, offset int) ([]Approval, error) {
+	return listRecentApprovals(ctx, q.e, limit, offset)
 }
 
 func (q queries) EnqueueNotification(ctx context.Context, eventType string, manifestID int64) (int64, error) {
@@ -413,12 +423,26 @@ func getApprovedManifest(ctx context.Context, e execer, serverID int64) (*Manife
 	return scanManifest(row)
 }
 
+// listPendingManifests is the whole approval queue in FIFO order. It is one
+// preset of listManifests rather than its own query, so there is a single
+// place where "how manifests are selected and ordered" is decided.
 func listPendingManifests(ctx context.Context, e execer) ([]ManifestRecord, error) {
-	rows, err := e.QueryContext(ctx, `
-		SELECT id, server_id, hash, canonical_json, state, diff_json, created_at
-		FROM manifests WHERE state = ? ORDER BY created_at`, StatePending)
+	return listManifests(ctx, e, ManifestFilter{State: StatePending, OldestFirst: true})
+}
+
+const manifestColumns = `id, server_id, hash, canonical_json, state, diff_json, created_at`
+
+// listManifests runs the one filtered, ordered, paged manifest query.
+//
+// Ordering breaks ties on id because created_at comes from time.Now() and two
+// manifests recorded in the same microsecond would otherwise come back in an
+// order SQLite is free to change between runs — which a paging client sees as
+// rows silently repeating or vanishing across pages.
+func listManifests(ctx context.Context, e execer, f ManifestFilter) ([]ManifestRecord, error) {
+	query, args := buildManifestQuery(f)
+	rows, err := e.QueryContext(ctx, query, args...)
 	if err != nil {
-		return nil, fmt.Errorf("database: list pending manifests: %w", err)
+		return nil, fmt.Errorf("database: list manifests: %w", err)
 	}
 	defer func() { _ = rows.Close() }()
 	var out []ManifestRecord
@@ -430,6 +454,39 @@ func listPendingManifests(ctx context.Context, e execer) ([]ManifestRecord, erro
 		out = append(out, *m)
 	}
 	return out, rows.Err()
+}
+
+func buildManifestQuery(f ManifestFilter) (string, []any) {
+	var (
+		conditions []string
+		args       []any
+	)
+	if f.ServerID != nil {
+		conditions = append(conditions, "server_id = ?")
+		args = append(args, *f.ServerID)
+	}
+	if f.State != "" {
+		conditions = append(conditions, "state = ?")
+		args = append(args, f.State)
+	}
+
+	query := `SELECT ` + manifestColumns + ` FROM manifests`
+	if len(conditions) > 0 {
+		query += " WHERE " + strings.Join(conditions, " AND ")
+	}
+	query += " ORDER BY created_at " + sortDirection(f.OldestFirst) + ", id " + sortDirection(f.OldestFirst)
+	if f.Limit > 0 {
+		query += " LIMIT ? OFFSET ?"
+		args = append(args, f.Limit, f.Offset)
+	}
+	return query, args
+}
+
+func sortDirection(ascending bool) string {
+	if ascending {
+		return "ASC"
+	}
+	return "DESC"
 }
 
 func updateManifestState(ctx context.Context, e execer, id int64, newState string) error {
@@ -453,19 +510,41 @@ func insertApproval(ctx context.Context, e execer, a *Approval) (int64, error) {
 	return id, nil
 }
 
+const approvalColumns = `id, manifest_id, decision, username, reason, created_at`
+
+// listApprovalsForManifest is one manifest's decision history, oldest first:
+// this is a narrative of what happened to that manifest, and it reads in the
+// order it happened.
 func listApprovalsForManifest(ctx context.Context, e execer, manifestID int64) ([]Approval, error) {
 	rows, err := e.QueryContext(ctx, `
-		SELECT id, manifest_id, decision, username, reason, created_at
-		FROM approvals WHERE manifest_id = ? ORDER BY created_at`, manifestID)
+		SELECT `+approvalColumns+`
+		FROM approvals WHERE manifest_id = ? ORDER BY created_at, id`, manifestID)
 	if err != nil {
 		return nil, fmt.Errorf("database: list approvals: %w", err)
 	}
+	return scanApprovals(rows)
+}
+
+// listRecentApprovals is the decision feed across every server, newest first:
+// this answers "what has been approved lately", which is a different question
+// from one manifest's history and therefore has the opposite ordering.
+func listRecentApprovals(ctx context.Context, e execer, limit, offset int) ([]Approval, error) {
+	rows, err := e.QueryContext(ctx, `
+		SELECT `+approvalColumns+`
+		FROM approvals ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?`, limit, offset)
+	if err != nil {
+		return nil, fmt.Errorf("database: list recent approvals: %w", err)
+	}
+	return scanApprovals(rows)
+}
+
+func scanApprovals(rows *sql.Rows) ([]Approval, error) {
 	defer func() { _ = rows.Close() }()
 	var out []Approval
 	for rows.Next() {
 		var a Approval
 		if err := rows.Scan(&a.ID, &a.ManifestID, &a.Decision, &a.Username, &a.Reason, &a.CreatedAt); err != nil {
-			return nil, fmt.Errorf("database: list approvals: scan: %w", err)
+			return nil, fmt.Errorf("database: scan approval: %w", err)
 		}
 		out = append(out, a)
 	}

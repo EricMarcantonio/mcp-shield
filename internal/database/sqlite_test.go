@@ -698,3 +698,153 @@ func TestDueNotificationsOrdersByIDAndHonoursLimit(t *testing.T) {
 		t.Fatalf("expected ascending id order, got %d then %d", due[0].ID, due[1].ID)
 	}
 }
+
+// --- manifest listing and the cross-server decision feed --------------------
+
+// seedManifests inserts one manifest per hash, in argument order, and returns
+// their ids. Rows inserted in the same microsecond tie on created_at, so the
+// listing queries break ties on id and these tests rely on that rather than
+// on sleeping between inserts.
+func seedManifests(t *testing.T, store *SQLiteStore, serverID int64, state string, hashes ...string) []int64 {
+	t.Helper()
+	ctx := context.Background()
+	ids := make([]int64, 0, len(hashes))
+	for _, h := range hashes {
+		id, err := store.InsertManifest(ctx, &ManifestRecord{ServerID: serverID, Hash: h, CanonicalJSON: "{}", State: state})
+		if err != nil {
+			t.Fatalf("insert manifest %s: %v", h, err)
+		}
+		ids = append(ids, id)
+	}
+	return ids
+}
+
+func TestListManifestsReturnsNewestFirst(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	srv, _ := store.CreateServer(ctx, "a", "")
+	ids := seedManifests(t, store, srv.ID, StatePending, "h1", "h2", "h3")
+
+	got, err := store.ListManifests(ctx, ManifestFilter{})
+	if err != nil {
+		t.Fatalf("list manifests: %v", err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("expected 3 manifests, got %d", len(got))
+	}
+	if got[0].ID != ids[2] || got[2].ID != ids[0] {
+		t.Fatalf("expected newest-first ordering, got ids %d,%d,%d", got[0].ID, got[1].ID, got[2].ID)
+	}
+}
+
+func TestListManifestsOldestFirst(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	srv, _ := store.CreateServer(ctx, "a", "")
+	ids := seedManifests(t, store, srv.ID, StatePending, "h1", "h2")
+
+	got, err := store.ListManifests(ctx, ManifestFilter{OldestFirst: true})
+	if err != nil {
+		t.Fatalf("list manifests: %v", err)
+	}
+	if len(got) != 2 || got[0].ID != ids[0] {
+		t.Fatalf("expected oldest-first ordering, got %+v", got)
+	}
+}
+
+func TestListManifestsFiltersByServerAndState(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	srvA, _ := store.CreateServer(ctx, "a", "")
+	srvB, _ := store.CreateServer(ctx, "b", "")
+	want := seedManifests(t, store, srvA.ID, StatePending, "keep")
+	seedManifests(t, store, srvA.ID, StateApproved, "wrong-state")
+	seedManifests(t, store, srvB.ID, StatePending, "wrong-server")
+
+	got, err := store.ListManifests(ctx, ManifestFilter{ServerID: &srvA.ID, State: StatePending})
+	if err != nil {
+		t.Fatalf("list manifests: %v", err)
+	}
+	if len(got) != 1 || got[0].ID != want[0] {
+		t.Fatalf("expected only server a's pending manifest, got %+v", got)
+	}
+}
+
+func TestListManifestsAppliesLimitAndOffset(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	srv, _ := store.CreateServer(ctx, "a", "")
+	ids := seedManifests(t, store, srv.ID, StatePending, "h1", "h2", "h3")
+
+	page, err := store.ListManifests(ctx, ManifestFilter{Limit: 1, Offset: 1, OldestFirst: true})
+	if err != nil {
+		t.Fatalf("list manifests: %v", err)
+	}
+	if len(page) != 1 || page[0].ID != ids[1] {
+		t.Fatalf("expected the second-oldest manifest alone, got %+v", page)
+	}
+}
+
+// TestListManifestsUnboundedWhenNoLimit pins the store-layer contract the
+// dashboard depends on: a zero Limit means "every match", not "no rows".
+func TestListManifestsUnboundedWhenNoLimit(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	srv, _ := store.CreateServer(ctx, "a", "")
+	seedManifests(t, store, srv.ID, StatePending, "h1", "h2")
+
+	got, err := store.ListManifests(ctx, ManifestFilter{Limit: 0})
+	if err != nil {
+		t.Fatalf("list manifests: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("expected an unbounded listing of 2, got %d", len(got))
+	}
+}
+
+func TestListRecentApprovalsSpansServersNewestFirst(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	srvA, _ := store.CreateServer(ctx, "a", "")
+	srvB, _ := store.CreateServer(ctx, "b", "")
+	manifestA := seedManifests(t, store, srvA.ID, StatePending, "ha")[0]
+	manifestB := seedManifests(t, store, srvB.ID, StatePending, "hb")[0]
+
+	if _, err := store.InsertApproval(ctx, &Approval{ManifestID: manifestA, Decision: DecisionApproved, Username: "eric"}); err != nil {
+		t.Fatalf("insert approval: %v", err)
+	}
+	if _, err := store.InsertApproval(ctx, &Approval{ManifestID: manifestB, Decision: DecisionRejected, Username: "sam"}); err != nil {
+		t.Fatalf("insert approval: %v", err)
+	}
+
+	got, err := store.ListRecentApprovals(ctx, 10, 0)
+	if err != nil {
+		t.Fatalf("list recent approvals: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("expected decisions from both servers, got %d", len(got))
+	}
+	if got[0].ManifestID != manifestB || got[1].ManifestID != manifestA {
+		t.Fatalf("expected newest-first ordering, got %+v", got)
+	}
+}
+
+func TestListRecentApprovalsPages(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	srv, _ := store.CreateServer(ctx, "a", "")
+	manifestID := seedManifests(t, store, srv.ID, StatePending, "h")[0]
+	for _, user := range []string{"first", "second", "third"} {
+		if _, err := store.InsertApproval(ctx, &Approval{ManifestID: manifestID, Decision: DecisionApproved, Username: user}); err != nil {
+			t.Fatalf("insert approval: %v", err)
+		}
+	}
+
+	page, err := store.ListRecentApprovals(ctx, 1, 1)
+	if err != nil {
+		t.Fatalf("list recent approvals: %v", err)
+	}
+	if len(page) != 1 || page[0].Username != "second" {
+		t.Fatalf("expected the second-newest decision alone, got %+v", page)
+	}
+}

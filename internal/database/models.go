@@ -46,6 +46,21 @@ type ManifestRecord struct {
 	CreatedAt     time.Time
 }
 
+// ManifestFilter narrows and pages Store.ListManifests. The zero value
+// matches every manifest, newest first.
+//
+// Limit <= 0 means "every match", which is what the server-rendered
+// dashboard asks for; every HTTP endpoint supplies a bound instead. Offset
+// only applies when Limit is set, since paging into an unbounded result has
+// no meaning.
+type ManifestFilter struct {
+	ServerID    *int64 // nil matches every server
+	State       string // "" matches every state
+	OldestFirst bool   // approval-queue order; the default is newest-first history order
+	Limit       int
+	Offset      int
+}
+
 type Approval struct {
 	ID         int64
 	ManifestID int64
